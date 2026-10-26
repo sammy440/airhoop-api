@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     heartbeat_timeout_s: float = 25.0
     # How often the background sweeper runs; 0 disables it (tests drive it manually).
     sweep_interval_s: float = 5.0
+    # Match clock resolution (shootout turn timers, race buzzer); 0 disables it.
+    tick_interval_s: float = 0.2
 
     @property
     def origins(self) -> list[str]:

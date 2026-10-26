@@ -3,6 +3,9 @@
 import uuid
 from datetime import UTC, datetime
 
+from typing import Any
+
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
 
@@ -17,6 +20,8 @@ class User(SQLModel, table=True):
     nickname: str = Field(max_length=20)
     # SHA-256 of the guest token; the token itself is never stored.
     token_hash: str = Field(max_length=64, unique=True, index=True)
+    # Player look (gender, skin, hair, kit colours, number); validated by schemas.Avatar.
+    avatar: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     created_at: datetime = Field(default_factory=utcnow)
 
 

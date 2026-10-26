@@ -19,7 +19,7 @@ def test_guest_session_and_me(client, engine):
     token, user_id = make_guest(client, "Dayo")
     me = client.get("/auth/me", headers=auth(token))
     assert me.status_code == 200
-    assert me.json() == {"id": user_id, "nickname": "Dayo"}
+    assert me.json() == {"id": user_id, "nickname": "Dayo", "avatar": None}
     with Session(engine) as s:
         user = s.exec(select(User)).one()
         assert user.token_hash == hash_token(token)
@@ -42,17 +42,58 @@ def test_rename(client):
     assert client.patch("/auth/me", json={"nickname": "New Name"}, headers=auth(token)).json()["nickname"] == "New Name"
 
 
+AVATAR = {
+    "version": 1, "gender": "female", "skin": "#4A2A17", "hair": "braids", "hairColor": "#1a120c",
+    "jersey": "#1f4fd1", "shorts": "#f4f1ea", "shoes": "#17110d", "number": 7,
+}
+
+
+def test_avatar_on_signup_update_and_rooms(client):
+    token = client.post("/auth/guest", json={"nickname": "Styled", "avatar": AVATAR}).json()["token"]
+    me = client.get("/auth/me", headers=auth(token)).json()
+    assert me["avatar"]["skin"] == "#4a2a17" and me["avatar"]["hair"] == "braids"  # hex normalised
+
+    plain, _ = make_guest(client, "Plain")
+    assert client.get("/auth/me", headers=auth(plain)).json()["avatar"] is None
+
+    # Name and look can change independently.
+    out = client.patch("/auth/me", json={"avatar": {**AVATAR, "number": 99}}, headers=auth(plain)).json()
+    assert out["nickname"] == "Plain" and out["avatar"]["number"] == 99
+    out = client.patch("/auth/me", json={"nickname": "Renamed"}, headers=auth(plain)).json()
+    assert out["nickname"] == "Renamed" and out["avatar"]["number"] == 99
+
+    code = client.post("/rooms", json={"mode": "race"}, headers=auth(token)).json()["code"]
+    room = client.post(f"/rooms/{code}/join", headers=auth(plain)).json()
+    assert [p["avatar"]["number"] for p in room["players"]] == [7, 99]
+
+    client.patch("/auth/me", json={"avatar": {**AVATAR, "number": 1}}, headers=auth(plain))
+    assert client.get(f"/rooms/{code}").json()["players"][1]["avatar"]["number"] == 1
+
+
+def test_avatar_validation(client):
+    token, _ = make_guest(client, "Strict")
+    for bad in [
+        {**AVATAR, "skin": "red"},
+        {**AVATAR, "skin": "#12345"},
+        {**AVATAR, "gender": "robot"},
+        {**AVATAR, "hair": "mohawk"},
+        {**AVATAR, "number": 100},
+        {**AVATAR, "script": "<x>"},
+    ]:
+        assert client.patch("/auth/me", json={"avatar": bad}, headers=auth(token)).status_code == 422, bad
+
+
 # ── Rooms ──
 
 
 def test_create_get_and_join_room(client):
     host, host_id = make_guest(client, "Host")
     guest, guest_id = make_guest(client, "Guest")
-    room = client.post("/rooms", json={"mode": "timed", "difficulty": "allstar"}, headers=auth(host)).json()
+    room = client.post("/rooms", json={"mode": "race", "difficulty": "allstar"}, headers=auth(host)).json()
     code = room["code"]
     assert len(code) == 5 and code.isupper()
     assert room["phase"] == "lobby" and room["host_id"] == host_id
-    assert room["mode"] == "timed" and room["difficulty"] == "allstar"
+    assert room["mode"] == "race" and room["difficulty"] == "allstar"
 
     joined = client.post(f"/rooms/{code.lower()}/join", headers=auth(guest)).json()  # codes are case-insensitive
     assert [p["id"] for p in joined["players"]] == [host_id, guest_id]

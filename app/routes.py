@@ -12,7 +12,7 @@ from .auth import CurrentUser, SessionDep, create_guest, user_from_token
 from .db import get_engine
 from .models import Score, User
 from .rooms import RoomError, RoomManager
-from .schemas import GuestCreate, GuestOut, LeaderboardEntry, Rename, RoomCreate, RoomOut, ScoreCreate, UserOut
+from .schemas import GuestCreate, GuestOut, LeaderboardEntry, ProfileUpdate, RoomCreate, RoomOut, ScoreCreate, UserOut
 
 router = APIRouter()
 
@@ -33,23 +33,32 @@ def health() -> dict[str, str]:
 # ── Guest auth ──
 
 
+def user_out(user: User) -> UserOut:
+    return UserOut(id=user.id, nickname=user.nickname, avatar=user.avatar)
+
+
 @router.post("/auth/guest", status_code=status.HTTP_201_CREATED)
 def guest(body: GuestCreate, session: SessionDep) -> GuestOut:
-    user, token = create_guest(session, body.nickname)
-    return GuestOut(user=UserOut(id=user.id, nickname=user.nickname), token=token)
+    user, token = create_guest(session, body.nickname, body.avatar.model_dump() if body.avatar else None)
+    return GuestOut(user=user_out(user), token=token)
 
 
 @router.get("/auth/me")
 def me(user: CurrentUser) -> UserOut:
-    return UserOut(id=user.id, nickname=user.nickname)
+    return user_out(user)
 
 
 @router.patch("/auth/me")
-def rename(body: Rename, user: CurrentUser, session: SessionDep) -> UserOut:
-    user.nickname = body.nickname
+def update_profile(body: ProfileUpdate, user: CurrentUser, session: SessionDep, request: Request) -> UserOut:
+    if body.nickname is not None:
+        user.nickname = body.nickname
+    if body.avatar is not None:
+        user.avatar = body.avatar.model_dump()
     session.add(user)
     session.commit()
-    return UserOut(id=user.id, nickname=user.nickname)
+    # Live rooms show the new name/look right away.
+    anyio.from_thread.run(manager_of(request).update_player, str(user.id), user.nickname, user.avatar)
+    return user_out(user)
 
 
 # ── Rooms ──
@@ -57,7 +66,7 @@ def rename(body: Rename, user: CurrentUser, session: SessionDep) -> UserOut:
 
 @router.post("/rooms", status_code=status.HTTP_201_CREATED)
 def create_room(body: RoomCreate, user: CurrentUser, request: Request) -> RoomOut:
-    room = manager_of(request).create(str(user.id), user.nickname, body.mode, body.difficulty)
+    room = manager_of(request).create(str(user.id), user.nickname, body.mode, body.difficulty, body.race_seconds, avatar=user.avatar)
     return RoomOut(**room.public())
 
 
@@ -72,7 +81,7 @@ def get_room(code: str, request: Request) -> RoomOut:
 @router.post("/rooms/{code}/join")
 def join_room(code: str, user: CurrentUser, request: Request) -> RoomOut:
     try:
-        return RoomOut(**manager_of(request).join(code, str(user.id), user.nickname).public())
+        return RoomOut(**manager_of(request).join(code, str(user.id), user.nickname, avatar=user.avatar).public())
     except RoomError as e:
         raise room_error(e) from e
 
@@ -95,7 +104,7 @@ PERIODS = {"day": timedelta(days=1), "week": timedelta(days=7), "all": None}
 @router.get("/leaderboard")
 def leaderboard(
     session: SessionDep,
-    mode: Annotated[str, Query(pattern=r"^(free|streak|timed\d{2,4})$")] = "timed60",
+    mode: Annotated[str, Query(pattern=r"^(free|streak|timed\d{2,4}|shootout|race\d{2,3})$")] = "timed60",
     difficulty: Annotated[str | None, Query(pattern=r"^(rookie|starter|allstar|legend)$")] = None,
     period: Literal["day", "week", "all"] = "all",
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -131,14 +140,14 @@ async def room_socket(ws: WebSocket, code: str, token: str | None = None) -> Non
     code = code.upper()
     with Session(get_engine()) as session:
         user = user_from_token(session, token)
-        identity = (str(user.id), user.nickname) if user else None
+        identity = (str(user.id), user.nickname, user.avatar) if user else None
     if identity is None:
         await ws.send_json({"type": "error", "code": "unauthorized", "message": "Missing or invalid guest token"})
         await ws.close(code=4401)
         return
-    user_id, nickname = identity
+    user_id, nickname, avatar = identity
     try:
-        await manager.connect(code, user_id, nickname, ws)
+        await manager.connect(code, user_id, nickname, ws, avatar=avatar)
     except RoomError as e:
         await ws.send_json({"type": "error", "code": e.code, "message": e.message})
         await ws.close(code=4404 if e.status == 404 else 4409)

@@ -11,7 +11,7 @@ from sqlmodel import Session
 
 from .config import Settings, get_settings
 from .db import get_engine
-from .models import Match
+from .models import Match, Score, Throw
 from .rooms import Room, RoomManager
 from .routes import router
 
@@ -33,19 +33,51 @@ def persistence_hooks(manager: RoomManager) -> None:
         if not room.match_id:
             return
         match_id = uuid.UUID(room.match_id)
+        result = room.match.result if room.match else None
+        mode_key = None if not room.match else "shootout" if room.match.mode == "shootout" else f"race{room.race_seconds}"
 
         def write() -> None:
             with Session(get_engine()) as s:
                 m = s.get(Match, match_id)
                 if m:
                     m.ended_at = datetime.now(UTC)
+                    if result and result["winner"]:
+                        m.winner_id = uuid.UUID(result["winner"])
                     s.add(m)
-                    s.commit()
+                # Verified multiplayer scores feed the leaderboard (not for aborted games).
+                if result and result["reason"] != "aborted" and mode_key:
+                    for row in result["standings"]:
+                        if not row["forfeited"]:
+                            s.add(Score(user_id=uuid.UUID(row["playerId"]), mode=mode_key, difficulty=room.difficulty, score=row["points"]))
+                s.commit()
+
+        await asyncio.to_thread(write)
+
+    async def on_throw(room: Room, user_id: str, payload: dict, sim, points: int) -> None:
+        if not room.match_id:
+            return
+        match_id = uuid.UUID(room.match_id)
+
+        def write() -> None:
+            with Session(get_engine()) as s:
+                s.add(
+                    Throw(
+                        match_id=match_id,
+                        user_id=uuid.UUID(user_id),
+                        power=float(payload["power"]),
+                        angle=float(payload["angle"]),
+                        arc=float(payload["arc"]),
+                        scored=sim.result.scored,
+                        points=points,
+                    )
+                )
+                s.commit()
 
         await asyncio.to_thread(write)
 
     manager.on_start = on_start
     manager.on_finish = on_finish
+    manager.on_throw = on_throw
 
 
 def create_app(settings: Settings | None = None, manager: RoomManager | None = None) -> FastAPI:
@@ -55,9 +87,13 @@ def create_app(settings: Settings | None = None, manager: RoomManager | None = N
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        task = asyncio.create_task(manager.run_sweeper()) if settings.sweep_interval_s > 0 else None
+        tasks = []
+        if settings.sweep_interval_s > 0:
+            tasks.append(asyncio.create_task(manager.run_sweeper()))
+        if settings.tick_interval_s > 0:
+            tasks.append(asyncio.create_task(manager.run_ticker()))
         yield
-        if task:
+        for task in tasks:
             task.cancel()
 
     app = FastAPI(title="AirHoops API", version="0.1.0", lifespan=lifespan)

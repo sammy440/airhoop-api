@@ -14,7 +14,7 @@ def room(client):
     """A room with host + guest seats (not yet connected)."""
     host, host_id = make_guest(client, "Host")
     guest, guest_id = make_guest(client, "Guest")
-    code = client.post("/rooms", json={"mode": "timed"}, headers=auth(host)).json()["code"]
+    code = client.post("/rooms", json={"mode": "race"}, headers=auth(host)).json()["code"]
     client.post(f"/rooms/{code}/join", headers=auth(guest))
     return {"code": code, "host": host, "host_id": host_id, "guest": guest, "guest_id": guest_id}
 
@@ -218,3 +218,14 @@ def test_leave_frees_the_seat(client, room, manager):
             b.send_json({"type": "leave"})
             assert receive_until(a, "presence", event="left")["player"]["nickname"] == "Guest"
     assert list(manager.rooms[room["code"]].players) == [room["host_id"]]
+
+
+def test_profile_edit_pushes_room_state(client, room):
+    with connect(client, room, "host") as a:
+        receive_until(a, "room_state")
+        look = {"version": 1, "gender": "male", "skin": "#8a5530", "hair": "afro", "hairColor": "#1a120c",
+                "jersey": "#13804f", "shorts": "#17110d", "shoes": "#f4f1ea", "number": 0}
+        client.patch("/auth/me", json={"nickname": "Captain", "avatar": look}, headers=auth(room["host"]))
+        state = receive_until(a, "room_state")
+        me = players(state)["Captain"]
+        assert me["avatar"]["jersey"] == "#13804f"

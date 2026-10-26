@@ -52,7 +52,7 @@ def clock() -> FakeClock:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(sweep_interval_s=0, reconnect_grace_s=30, heartbeat_timeout_s=25, max_players=4)
+    return Settings(sweep_interval_s=0, tick_interval_s=0, reconnect_grace_s=30, heartbeat_timeout_s=25, max_players=4)
 
 
 @pytest.fixture

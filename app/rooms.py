@@ -28,6 +28,8 @@ from typing import Any, Literal
 from fastapi import WebSocket
 
 from .config import Settings
+from .game.physics import ShotSim
+from .match import MatchEngine, MatchError
 
 Phase = Literal["lobby", "ready", "in_progress", "finished"]
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L: easy to read aloud
@@ -59,6 +61,7 @@ class Player:
     disconnected_at: float | None = None
     # Distinguishes a first "joined" from a "reconnected" presence event.
     ever_connected: bool = False
+    avatar: dict[str, Any] | None = None
 
     @property
     def connected(self) -> bool:
@@ -73,9 +76,11 @@ class Room:
     difficulty: str
     max_players: int
     created_at: float
+    race_seconds: int = 60
     phase: Phase = "lobby"
     players: dict[str, Player] = field(default_factory=dict)
     match_id: str | None = None
+    match: MatchEngine | None = None
 
     def public(self) -> dict[str, Any]:
         return {
@@ -84,15 +89,24 @@ class Room:
             "mode": self.mode,
             "difficulty": self.difficulty,
             "max_players": self.max_players,
+            "race_seconds": self.race_seconds,
             "host_id": self.host_id,
             "players": [
-                {"id": p.id, "nickname": p.nickname, "ready": p.ready, "connected": p.connected, "host": p.id == self.host_id}
+                {
+                    "id": p.id,
+                    "nickname": p.nickname,
+                    "avatar": p.avatar,
+                    "ready": p.ready,
+                    "connected": p.connected,
+                    "host": p.id == self.host_id,
+                }
                 for p in self.players.values()
             ],
         }
 
 
 Hook = Callable[[Room], Awaitable[None]]
+ThrowHook = Callable[[Room, str, dict[str, Any], ShotSim, int], Awaitable[None]]
 
 
 class RoomManager:
@@ -104,6 +118,7 @@ class RoomManager:
         # Persistence hooks (set by the app): create / close the Match row.
         self.on_start: Hook | None = None
         self.on_finish: Hook | None = None
+        self.on_throw: ThrowHook | None = None
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -126,7 +141,7 @@ class RoomManager:
             raise RoomError("room_not_found", "No room with that code", 404)
         return room
 
-    def create(self, user_id: str, nickname: str, mode: str, difficulty: str) -> Room:
+    def create(self, user_id: str, nickname: str, mode: str, difficulty: str, race_seconds: int = 60, avatar: dict[str, Any] | None = None) -> Room:
         now = self.clock()
         room = Room(
             code=self._new_code(),
@@ -135,31 +150,41 @@ class RoomManager:
             difficulty=difficulty,
             max_players=self.settings.max_players,
             created_at=now,
+            race_seconds=race_seconds,
         )
         # The creator holds a seat until their socket connects (or the grace period ends).
-        room.players[user_id] = Player(id=user_id, nickname=nickname, joined_at=now, disconnected_at=now)
+        room.players[user_id] = Player(id=user_id, nickname=nickname, joined_at=now, disconnected_at=now, avatar=avatar)
         self.rooms[room.code] = room
         return room
 
-    def join(self, code: str, user_id: str, nickname: str) -> Room:
+    def join(self, code: str, user_id: str, nickname: str, avatar: dict[str, Any] | None = None) -> Room:
         room = self.get(code)
         if user_id in room.players:
             room.players[user_id].nickname = nickname
+            room.players[user_id].avatar = avatar
             return room  # rejoining your own seat is always allowed
         if room.phase in ("in_progress", "finished"):
             raise RoomError("room_in_progress", "That match has already started", 409)
         if len(room.players) >= room.max_players:
             raise RoomError("room_full", "That room is full", 409)
         now = self.clock()
-        room.players[user_id] = Player(id=user_id, nickname=nickname, joined_at=now, disconnected_at=now)
+        room.players[user_id] = Player(id=user_id, nickname=nickname, joined_at=now, disconnected_at=now, avatar=avatar)
         self._recompute_phase(room)
         return room
 
+    async def update_player(self, user_id: str, nickname: str, avatar: dict[str, Any] | None) -> None:
+        """Profile edits show up right away in any room the player is in."""
+        for room in list(self.rooms.values()):
+            if (p := room.players.get(user_id)) is not None:
+                p.nickname = nickname
+                p.avatar = avatar
+                await self.broadcast_state(room)
+
     # ── WebSocket-side operations ──
 
-    async def connect(self, code: str, user_id: str, nickname: str, ws: WebSocket) -> Room:
+    async def connect(self, code: str, user_id: str, nickname: str, ws: WebSocket, avatar: dict[str, Any] | None = None) -> Room:
         async with self.lock:
-            room = self.join(code, user_id, nickname)
+            room = self.join(code, user_id, nickname, avatar)
             player = room.players[user_id]
             old = player.ws
             first_connect = not player.ever_connected
@@ -176,6 +201,10 @@ class RoomManager:
         if event:
             await self._presence(room, event, player)
         await self.broadcast_state(room)
+        if room.match is not None:
+            # Rejoining mid-match: rebuild the match view.
+            for m in room.match.snapshot():
+                await self._send(ws, {**m, "serverTime": self.clock()})
         return room
 
     async def disconnect(self, code: str, user_id: str, ws: WebSocket) -> None:
@@ -200,7 +229,10 @@ class RoomManager:
         kind = msg.get("type")
 
         if kind == "ping":
-            await self._send(ws, {"type": "pong", "t": msg.get("t")})
+            await self._send(ws, {"type": "pong", "t": msg.get("t"), "serverTime": self.clock()})
+            return True
+        if kind == "throw":
+            await self._throw(room, player, ws, msg)
             return True
         try:
             async with self.lock:
@@ -210,6 +242,7 @@ class RoomManager:
             return True
         if kind == "leave":
             await self._presence(room, "left", player)
+            await self._forfeit(room, player.id)
             await self.broadcast_state(room)
             await self._cleanup_if_empty(room)
             await self._safe_close(ws, 1000, "Left the room")
@@ -217,7 +250,72 @@ class RoomManager:
         if changed:
             await self._run_hooks(room, kind)
             await self.broadcast_state(room)
+            if kind == "start" and room.match:
+                await self._match_out(room, [room.match.start_msg(), room.match.scoreboard(), *filter(None, [room.match.turn_msg()])])
+            elif kind == "end" and room.match and room.match.result:
+                await self._match_out(room, [room.match.result])
         return True
+
+    async def _throw(self, room: Room, player: Player, ws: WebSocket, msg: dict[str, Any]) -> None:
+        if room.phase != "in_progress" or room.match is None:
+            await self._send(ws, {"type": "error", "code": "not_playing", "message": "No match in progress"})
+            return
+        try:
+            async with self.lock:
+                out, sim = room.match.throw(player.id, msg, self.clock())
+        except MatchError as e:
+            await self._send(ws, {"type": "error", "code": e.code, "message": e.message})
+            return
+        await self._match_out(room, out)
+        if self.on_throw:
+            await self.on_throw(room, player.id, msg, sim, out[0]["points"])
+        if room.match.finished:
+            await self._finish_match(room)
+
+    async def _forfeit(self, room: Room, user_id: str) -> None:
+        if room.phase != "in_progress" or room.match is None:
+            return
+        out = room.match.forfeit(user_id, self.clock())
+        await self._match_out(room, out)
+        if room.match.finished:
+            await self._finish_match(room)
+
+    async def _finish_match(self, room: Room) -> None:
+        room.phase = "finished"
+        if self.on_finish:
+            await self.on_finish(room)
+        await self.broadcast_state(room)
+
+    async def tick_matches(self) -> None:
+        """Shot clocks and buzzers for every running match."""
+        now = self.clock()
+        for room in list(self.rooms.values()):
+            m = room.match
+            if room.phase != "in_progress" or m is None or m.finished:
+                continue
+            out = m.tick(now, lambda pid, r=room: pid in r.players and r.players[pid].connected)
+            if out:
+                await self._match_out(room, out)
+            if m.finished:
+                await self._finish_match(room)
+
+    async def run_ticker(self) -> None:
+        while True:
+            await asyncio.sleep(self.settings.tick_interval_s)
+            try:
+                await self.tick_matches()
+            except Exception:
+                import logging
+
+                logging.getLogger("airhoops.rooms").exception("tick failed")
+
+    async def _match_out(self, room: Room, msgs: list[dict[str, Any]]) -> None:
+        now = self.clock()
+        for m in msgs:
+            payload = {**m, "serverTime": now}
+            for p in list(room.players.values()):
+                if p.ws is not None:
+                    await self._send(p.ws, payload)
 
     def _apply(self, room: Room, player: Player, kind: Any, msg: dict[str, Any]) -> bool:
         is_host = player.id == room.host_id
@@ -231,12 +329,16 @@ class RoomManager:
             if room.phase != "ready":
                 raise RoomError("not_ready", "Everyone must be connected and ready (2+ players)")
             room.phase = "in_progress"
+            mode = room.mode if room.mode in ("shootout", "race") else "race"
+            room.match = MatchEngine(mode, room.difficulty, list(room.players), self.clock(), race_seconds=room.race_seconds)
         elif kind == "end":
             if not is_host:
                 raise RoomError("not_host", "Only the host can end the match")
             if room.phase != "in_progress":
                 raise RoomError("bad_phase", "No match in progress")
             room.phase = "finished"
+            if room.match and not room.match.finished:
+                room.match.abort()
         elif kind == "rematch":
             if not is_host:
                 raise RoomError("not_host", "Only the host can start a rematch")
@@ -244,6 +346,7 @@ class RoomManager:
                 raise RoomError("bad_phase", "The match isn't over yet")
             room.phase = "lobby"
             room.match_id = None
+            room.match = None
             for p in room.players.values():
                 p.ready = False
         elif kind == "leave":
@@ -277,6 +380,7 @@ class RoomManager:
                     await self.disconnect(room.code, p.id, ws)
             for p in expired:
                 await self._presence(room, "left", p)
+                await self._forfeit(room, p.id)
             if expired:
                 await self.broadcast_state(room)
             await self._cleanup_if_empty(room)

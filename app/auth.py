@@ -15,9 +15,9 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def create_guest(session: Session, nickname: str) -> tuple[User, str]:
+def create_guest(session: Session, nickname: str, avatar: dict | None = None) -> tuple[User, str]:
     token = secrets.token_urlsafe(32)
-    user = User(nickname=nickname, token_hash=hash_token(token))
+    user = User(nickname=nickname, token_hash=hash_token(token), avatar=avatar)
     session.add(user)
     session.commit()
     session.refresh(user)
