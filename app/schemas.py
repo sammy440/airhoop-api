@@ -1,5 +1,3 @@
-"""Request / response models."""
-
 import uuid
 from typing import Annotated, Literal
 
@@ -46,8 +44,6 @@ class GuestOut(BaseModel):
 
 
 class ProfileUpdate(BaseModel):
-    """Change your name, your look, or both."""
-
     nickname: Nickname | None = None
     avatar: Avatar | None = None
 

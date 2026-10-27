@@ -1,4 +1,4 @@
-"""Database tables (README §7.3)."""
+"""Database tables."""
 
 import uuid
 from datetime import UTC, datetime

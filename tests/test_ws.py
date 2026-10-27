@@ -1,4 +1,4 @@
-"""WebSocket rooms: presence, lifecycle, reconnects, heartbeats, cleanup (README Week 6 'done when')."""
+"""WebSocket rooms: presence, lifecycle, reconnects, heartbeats, cleanup."""
 
 import pytest
 from sqlmodel import Session, select

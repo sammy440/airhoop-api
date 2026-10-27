@@ -1,5 +1,5 @@
 """
-Server-authoritative match engine (README Week 7).
+Server-authoritative match engine.
 
 Pure game logic: every method takes `now` (server seconds) and returns the
 messages to send, so the rules are unit-testable without sockets. The room

@@ -1,4 +1,4 @@
-"""Guest sessions (README Week 6): a nickname plus an opaque bearer token."""
+"""Guest sessions: a nickname plus an opaque bearer token."""
 
 import hashlib
 import secrets

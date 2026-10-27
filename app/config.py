@@ -1,4 +1,4 @@
-"""Environment configuration (README §10: DATABASE_URL, ALLOWED_ORIGINS)."""
+"""Environment configuration."""
 
 from functools import lru_cache
 
@@ -25,9 +25,7 @@ class Settings(BaseSettings):
     # Match clock resolution (shootout turn timers, race buzzer); 0 disables it.
     tick_interval_s: float = 0.2
 
-    # Abuse protection (per client IP). Off only in tests that hammer endpoints.
     rate_limit_enabled: bool = True
-    # Error tracking: set SENTRY_DSN to report backend exceptions to Sentry.
     sentry_dsn: str = ""
     environment: str = "development"
     log_level: str = "INFO"

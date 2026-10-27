@@ -1,11 +1,11 @@
 """
-In-memory rooms + WebSocket presence (README Week 6).
+In-memory rooms + WebSocket presence.
 
 Lifecycle:  lobby ⇄ ready → in_progress → finished → (rematch) lobby
   • lobby → ready        automatically, when ≥2 players are connected and all are ready
   • ready → lobby        if anyone un-readies, disconnects, joins or leaves
   • ready → in_progress  host sends "start"
-  • in_progress → finished  host sends "end" (Week 7 ends matches automatically)
+  • in_progress → finished  the match ends (or the host sends "end")
   • finished → lobby     host sends "rematch"
 
 Presence:
@@ -13,7 +13,7 @@ Presence:
   • A socket silent for `heartbeat_timeout_s` (no message, not even "ping") is closed.
   • `sweep()` removes expired seats, hands the host role on, and deletes empty rooms.
 
-State lives in one process (README: single instance first; Redis pub/sub later).
+State lives in one process (single instance; Redis pub/sub when scaling out).
 """
 
 from __future__ import annotations

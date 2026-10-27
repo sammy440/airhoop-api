@@ -1,8 +1,7 @@
 """
 Small in-memory rate limiter (sliding window per client IP and bucket).
 
-Good enough for the single API instance the README starts with; swap for
-Redis when scaling out. Behind a proxy, run uvicorn with --proxy-headers so
+Good enough for a single API instance; swap for Redis when scaling out. Behind a proxy, run uvicorn with --proxy-headers so
 `request.client.host` is the real client address.
 """
 

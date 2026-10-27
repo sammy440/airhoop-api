@@ -1,4 +1,4 @@
-"""REST endpoints (README Week 6)."""
+"""REST and WebSocket endpoints."""
 
 import logging
 from datetime import UTC, datetime, timedelta

@@ -1,4 +1,4 @@
-"""Week 7 'done when', end-to-end over WebSockets:
+"""Matches end-to-end over WebSockets:
 results match on both screens, impossible throws are rejected, dropped players are handled."""
 
 import uuid
