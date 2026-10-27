@@ -60,4 +60,7 @@ class Score(SQLModel, table=True):
     mode: str = Field(max_length=16, index=True)
     difficulty: str = Field(max_length=16)
     score: int
+    # Run stats used to sanity-check self-reported solo scores (null for multiplayer rows).
+    shots: int | None = None
+    makes: int | None = None
     created_at: datetime = Field(default_factory=utcnow, index=True)

@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-timeout>=2.3", "httpx>=0.28"]
+monitoring = ["sentry-sdk[fastapi]>=2.18"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

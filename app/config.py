@@ -22,6 +22,22 @@ class Settings(BaseSettings):
     # Match clock resolution (shootout turn timers, race buzzer); 0 disables it.
     tick_interval_s: float = 0.2
 
+    # Abuse protection (per client IP). Off only in tests that hammer endpoints.
+    rate_limit_enabled: bool = True
+    # Error tracking: set SENTRY_DSN to report backend exceptions to Sentry.
+    sentry_dsn: str = ""
+    environment: str = "development"
+    log_level: str = "INFO"
+
+    @property
+    def db_url(self) -> str:
+        """Managed hosts hand out postgres:// URLs; SQLAlchemy wants the psycopg driver named."""
+        url = self.database_url
+        for prefix in ("postgres://", "postgresql://"):
+            if url.startswith(prefix):
+                return "postgresql+psycopg://" + url[len(prefix) :]
+        return url
+
     @property
     def origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

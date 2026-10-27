@@ -1,17 +1,20 @@
 """FastAPI app: `uvicorn app.main:app --reload`."""
 
 import asyncio
+import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
 from .config import Settings, get_settings
 from .db import get_engine
 from .models import Match, Score, Throw
+from .ratelimit import RateLimiter
 from .rooms import Room, RoomManager
 from .routes import router
 
@@ -80,10 +83,21 @@ def persistence_hooks(manager: RoomManager) -> None:
     manager.on_throw = on_throw
 
 
-def create_app(settings: Settings | None = None, manager: RoomManager | None = None) -> FastAPI:
+def setup_monitoring(settings: Settings) -> None:
+    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if settings.sentry_dsn:
+        import sentry_sdk  # optional dependency: pip install '.[monitoring]'
+
+        # No PII: guest tokens never appear in events; IPs are not sent.
+        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.environment, traces_sample_rate=0.05, send_default_pii=False)
+
+
+def create_app(settings: Settings | None = None, manager: RoomManager | None = None, limiter: RateLimiter | None = None) -> FastAPI:
     settings = settings or get_settings()
+    setup_monitoring(settings)
     manager = manager or RoomManager(settings)
     persistence_hooks(manager)
+    access = logging.getLogger("airhoops.http")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -99,6 +113,18 @@ def create_app(settings: Settings | None = None, manager: RoomManager | None = N
     app = FastAPI(title="AirHoops API", version="0.1.0", lifespan=lifespan)
     app.state.rooms = manager
     app.state.settings = settings
+    app.state.limiter = limiter or RateLimiter(enabled=settings.rate_limit_enabled)
+
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        ms = (time.perf_counter() - start) * 1000
+        if request.url.path != "/health":  # uptime pings would drown everything else
+            level = logging.WARNING if response.status_code >= 500 or ms > 1000 else logging.INFO
+            access.log(level, "%s %s %d %.0fms", request.method, request.url.path, response.status_code, ms)
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.origins,

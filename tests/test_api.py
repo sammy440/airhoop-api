@@ -123,30 +123,107 @@ def test_room_capacity(client):
 # ── Scores / leaderboard ──
 
 
+def score(client, token, mode="timed60", difficulty="starter", points=10, shots=20, makes=10):
+    return client.post("/scores", json={"mode": mode, "difficulty": difficulty, "score": points, "shots": shots, "makes": makes}, headers=auth(token))
+
+
 def test_leaderboard_best_per_player(client):
     a, _ = make_guest(client, "Alice")
     b, _ = make_guest(client, "Bola")
-    for t, score in [(a, 40), (a, 90), (b, 70), (b, 70)]:
-        assert client.post("/scores", json={"mode": "timed60", "difficulty": "starter", "score": score}, headers=auth(t)).status_code == 201
-    client.post("/scores", json={"mode": "streak", "difficulty": "starter", "score": 999}, headers=auth(b))
+    for t, pts in [(a, 40), (a, 90), (b, 70), (b, 70)]:
+        assert score(client, t, points=pts).status_code == 201
+    score(client, b, mode="streak", points=12, makes=12)
 
     board = client.get("/leaderboard", params={"mode": "timed60"}).json()
     assert [(e["rank"], e["nickname"], e["best"], e["games"]) for e in board] == [(1, "Alice", 90, 2), (2, "Bola", 70, 2)]
 
 
+def test_leaderboard_ties_share_rank_and_show_avatars(client):
+    look = {"version": 1, "gender": "male", "skin": "#8a5530", "hair": "afro", "hairColor": "#1a120c",
+            "jersey": "#13804f", "shorts": "#17110d", "shoes": "#f4f1ea", "number": 4}
+    a = client.post("/auth/guest", json={"nickname": "Ace", "avatar": look}).json()["token"]
+    b, _ = make_guest(client, "Bee")
+    c, _ = make_guest(client, "Cee")
+    for t, pts in [(a, 50), (b, 50), (c, 20)]:
+        score(client, t, points=pts)
+    board = client.get("/leaderboard", params={"mode": "timed60"}).json()
+    assert [e["rank"] for e in board] == [1, 1, 3]
+    assert board[0]["avatar"]["number"] == 4 and board[1]["avatar"] is None
+
+
+def test_submit_returns_rank_and_personal_bests(client, engine):
+    a, _ = make_guest(client, "Ada")
+    b, b_id = make_guest(client, "Ben")
+    score(client, a, points=80)
+    saved = score(client, b, points=30).json()
+    assert saved == {"status": "saved", "best": 30, "rank": 2}
+    assert score(client, b, points=95, makes=15).json() == {"status": "saved", "best": 95, "rank": 1}
+
+    # An older, higher score only counts for the all-time board.
+    with Session(engine) as s:
+        s.add(Score(user_id=b_id, mode="timed60", difficulty="starter", score=120, created_at=datetime.now(UTC) - timedelta(days=3)))
+        s.commit()
+    me = client.get("/leaderboard/me", params={"mode": "timed60", "difficulty": "starter"}, headers=auth(b)).json()
+    assert me["day"] == {"best": 95, "games": 2, "rank": 1}
+    assert me["week"]["best"] == 120 and me["all"]["games"] == 3
+    assert client.get("/leaderboard/me", params={"mode": "streak"}, headers=auth(b)).json() == {"day": None, "week": None, "all": None}
+    assert client.get("/leaderboard/me").status_code == 401
+
+
 def test_leaderboard_period_and_difficulty_filters(client, engine):
     a, a_id = make_guest(client, "Ada")
-    client.post("/scores", json={"mode": "timed60", "difficulty": "legend", "score": 10}, headers=auth(a))
+    score(client, a, difficulty="legend", points=10)
     with Session(engine) as s:
         s.add(Score(user_id=a_id, mode="timed60", difficulty="legend", score=500, created_at=datetime.now(UTC) - timedelta(days=3)))
         s.commit()
     assert client.get("/leaderboard", params={"mode": "timed60"}).json()[0]["best"] == 500
+    assert client.get("/leaderboard", params={"mode": "timed60", "period": "week"}).json()[0]["best"] == 500
     assert client.get("/leaderboard", params={"mode": "timed60", "period": "day"}).json()[0]["best"] == 10
     assert client.get("/leaderboard", params={"mode": "timed60", "difficulty": "rookie"}).json() == []
 
 
 def test_score_validation(client):
     t, _ = make_guest(client, "Val")
-    assert client.post("/scores", json={"mode": "timed", "difficulty": "starter", "score": 5}, headers=auth(t)).status_code == 422
-    assert client.post("/scores", json={"mode": "free", "difficulty": "starter", "score": -1}, headers=auth(t)).status_code == 422
+    assert score(client, t, mode="timed").status_code == 422
+    assert score(client, t, mode="free", points=-1).status_code == 422
     assert client.get("/leaderboard", params={"mode": "drop table"}).status_code == 422
+
+
+def test_impossible_scores_are_rejected(client):
+    t, _ = make_guest(client, "Cheat")
+    assert score(client, t, points=9 * 10, makes=10, shots=10).status_code == 201  # perfect starter run
+    for bad in [
+        dict(makes=11, shots=10),  # more makes than shots
+        dict(points=91, makes=10, shots=10),  # beyond 9 points per make on starter
+        dict(mode="timed30", points=10, makes=10, shots=31),  # > 1 shot per second
+        dict(mode="timed10", points=1, makes=1, shots=1),  # timed runs are 30 s+
+        dict(mode="streak", points=11, makes=10, shots=10),  # streak longer than makes
+    ]:
+        assert score(client, t, **bad).status_code == 422, bad
+    assert score(client, t, difficulty="legend", points=180, makes=10, shots=10).status_code == 201
+
+
+def test_rate_limits(client):
+    client.app.state.limiter.hits.clear()
+    codes = [client.post("/auth/guest", json={"nickname": f"Spam{i}"}).status_code for i in range(12)]
+    assert codes.count(201) == 10 and codes[-1] == 429
+    res = client.post("/auth/guest", json={"nickname": "Again"})
+    assert res.json()["detail"]["code"] == "rate_limited" and int(res.headers["retry-after"]) >= 1
+
+
+def test_health_ready_and_client_errors(client):
+    assert client.get("/health/ready").json() == {"status": "ok", "db": "ok", "rooms": 0}
+    assert client.post("/telemetry/errors", json={"message": "TypeError: x is undefined", "url": "/play"}).status_code == 202
+    assert client.post("/telemetry/errors", json={"message": "x" * 501}).status_code == 422
+
+
+def test_delete_my_data(client, engine):
+    t, uid = make_guest(client, "Gone")
+    other, _ = make_guest(client, "Stays")
+    score(client, t, points=50)
+    score(client, other, points=40)
+    assert client.delete("/auth/me", headers=auth(t)).status_code == 204
+    assert client.get("/auth/me", headers=auth(t)).status_code == 401
+    assert [e["nickname"] for e in client.get("/leaderboard", params={"mode": "timed60"}).json()] == ["Stays"]
+    with Session(engine) as s:
+        assert s.exec(select(Score).where(Score.user_id == uid)).all() == []

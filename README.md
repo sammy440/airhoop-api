@@ -30,14 +30,21 @@ Room and match timing (reconnect grace, heartbeats, shot clocks, buzzers) is tes
 
 | Method | Path | Auth | |
 |---|---|---|---|
-| GET | `/health` | | liveness |
-| POST | `/auth/guest` | | `{nickname}` → `{user, token}` |
-| GET / PATCH | `/auth/me` | Bearer | who am I / rename |
-| POST | `/rooms` | Bearer | `{mode, difficulty}` → room (you're the host) |
+| GET | `/health` | | liveness (cheap; for load balancers) |
+| GET | `/health/ready` | | readiness: DB answers (503 if not); point uptime monitors here |
+| POST | `/auth/guest` | | `{nickname, avatar?}` → `{user, token}` · 10/min per IP |
+| GET / PATCH / DELETE | `/auth/me` | Bearer | who am I / update `{nickname?, avatar?}` / erase me + my scores and throws |
+| POST | `/rooms` | Bearer | `{mode, difficulty, race_seconds}` → room (you're the host) · 20/min |
 | GET | `/rooms/{code}` | | room preview |
-| POST | `/rooms/{code}/join` | Bearer | take a seat (409 if full / already playing) |
-| POST | `/scores` | Bearer | `{mode, difficulty, score}` (solo, self-reported) |
-| GET | `/leaderboard?mode=timed60&difficulty=&period=day\|week\|all&limit=20` | | best per player |
+| POST | `/rooms/{code}/join` | Bearer | take a seat (409 if full / already playing) · 30/min |
+| POST | `/scores` | Bearer | solo run `{mode, difficulty, score, shots, makes}` → `{best, rank}` · 30/min |
+| GET | `/leaderboard?mode=timed60&difficulty=&period=day\|week\|all&limit=20` | | best per player, ties share a rank, with avatars |
+| GET | `/leaderboard/me?mode=&difficulty=` | Bearer | your best, runs and rank for day / week / all |
+| POST | `/telemetry/errors` | | browser crash report `{message, stack?, url?, release?}` · 20/min |
+
+Solo scores are simulated in the browser, so they're self-reported, but the server rejects impossible runs:
+more makes than shots, more points than `makes × max points per make` for the difficulty, a streak longer than
+the makes, or more than one shot per second of a timed run. Multiplayer scores are fully server-refereed.
 
 ## WebSocket `/ws/{code}?token=…`
 
@@ -86,6 +93,35 @@ TypeScript code; regenerate with `GEN_PARITY=1 npx vitest run src/lib/game/parit
 
 Finished matches store `winner_id`, every throw (`throws`), and each player's points in `scores` under
 `shootout` / `race{seconds}` for the leaderboard.
+
+## Deploy
+
+One container, one instance (rooms live in memory). `start.sh` runs `alembic upgrade head`, then Uvicorn with
+`--proxy-headers` so rate limiting sees real client IPs.
+
+**Railway** (config in `railway.json`: Dockerfile build, `/health` check, 1 replica, never sleeps)
+
+1. New project → **Deploy from GitHub repo** → this repo.
+2. In the project, **+ New → Database → PostgreSQL**.
+3. On the API service → **Variables**:
+   - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (reference variable; uses Railway's private network)
+   - `ALLOWED_ORIGINS` = `https://<your-app>.vercel.app` (comma-separate extra domains)
+   - `ENVIRONMENT` = `production` · optional `SENTRY_DSN`
+4. **Settings → Networking → Generate Domain**. That `https://…up.railway.app` URL is the frontend's
+   `NEXT_PUBLIC_API_URL`; WebSockets work on the same domain (`wss://`).
+
+Railway sets `PORT`; `start.sh` uses it. Migrations run on every deploy before the server starts.
+Keep it at 1 replica (rooms are in memory) and leave serverless/app sleeping off, or live matches get dropped.
+
+`DATABASE_URL` may be given as `postgres://…` (as managed hosts print it); it's converted to the psycopg driver.
+
+## Monitoring
+
+- **Uptime:** point a free monitor (Better Stack, UptimeRobot) at `GET /health/ready` every minute.
+- **Errors:** set `SENTRY_DSN` to send backend exceptions to Sentry (installed via the `monitoring` extra; no PII).
+  Browser crashes arrive at `/telemetry/errors` and are logged at ERROR level (and so reach Sentry too).
+- **Logs:** one line per request (`METHOD path status ms`); 5xx and requests slower than 1 s log as WARNING.
+- **Rate limits:** in-memory sliding window per IP (see table). Swap for Redis when running several instances.
 
 ## Notes
 
