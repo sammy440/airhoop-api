@@ -227,3 +227,23 @@ def test_delete_my_data(client, engine):
     assert [e["nickname"] for e in client.get("/leaderboard", params={"mode": "timed60"}).json()] == ["Stays"]
     with Session(engine) as s:
         assert s.exec(select(Score).where(Score.user_id == uid)).all() == []
+
+
+def test_cors_origins():
+    from app.config import Settings
+
+    s = Settings(allowed_origins=' "https://airhoops.vercel.app/" , https://https://play.example.com/,  ')
+    assert s.origins == ["https://airhoops.vercel.app", "https://play.example.com"]
+
+
+def test_cors_allows_vercel_deployments(client):
+    def allowed(origin: str):
+        res = client.options("/leaderboard", headers={"Origin": origin, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "content-type"})
+        return res.headers.get("access-control-allow-origin") == origin
+
+    assert allowed("http://localhost:3000")
+    assert allowed("https://airhoops.vercel.app")
+    assert allowed("https://airhoops-git-master-sammie440s-projects.vercel.app")
+    assert allowed("https://airhoops-4f7k2xq1-sammie440s-projects.vercel.app")
+    assert not allowed("https://airhoops-evil.vercel.app")
+    assert not allowed("https://evil.example.com")

@@ -105,7 +105,8 @@ One container, one instance (rooms live in memory). `start.sh` runs `alembic upg
 2. In the project, **+ New → Database → PostgreSQL**.
 3. On the API service → **Variables**:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (reference variable; uses Railway's private network)
-   - `ALLOWED_ORIGINS` = `https://<your-app>.vercel.app` (comma-separate extra domains)
+   - `ALLOWED_ORIGINS` = `https://airhoops.vercel.app` (comma-separate extra domains, e.g. a custom domain).
+     The production site and this project's Vercel branch/preview URLs are always allowed (`ALLOWED_ORIGIN_REGEX`).
    - `ENVIRONMENT` = `production` · optional `SENTRY_DSN`
 4. **Settings → Networking → Generate Domain**. That `https://…up.railway.app` URL is the frontend's
    `NEXT_PUBLIC_API_URL`; WebSockets work on the same domain (`wss://`).

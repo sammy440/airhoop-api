@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://localhost/airhoops"
     # Comma-separated list of frontend origins allowed by CORS.
     allowed_origins: str = "http://localhost:3000"
+    # Also allowed: origins matching this regex. Default: the production site and Vercel's
+    # branch / preview deployments of this project (airhoops-git-master-…, airhoops-<hash>-…).
+    allowed_origin_regex: str = r"https://airhoops(-[a-z0-9-]+-sammie440s-projects)?\.vercel\.app"
 
     max_players: int = 4
     # A disconnected player keeps their seat this long (page reloads, Wi-Fi blips).
@@ -40,7 +43,15 @@ class Settings(BaseSettings):
 
     @property
     def origins(self) -> list[str]:
-        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+        """Forgiving about how the env var was typed: quotes, spaces, trailing slashes, a doubled scheme."""
+        out = []
+        for raw in self.allowed_origins.split(","):
+            o = raw.strip().strip("'\"").rstrip("/")
+            while o.startswith(("https://https://", "https://http://", "http://http://", "http://https://")):
+                o = o.split("://", 1)[1]
+            if o:
+                out.append(o)
+        return out
 
 
 @lru_cache

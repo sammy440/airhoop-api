@@ -128,6 +128,7 @@ def create_app(settings: Settings | None = None, manager: RoomManager | None = N
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.origins,
+        allow_origin_regex=settings.allowed_origin_regex or None,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
