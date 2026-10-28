@@ -33,8 +33,9 @@ Room and match timing (reconnect grace, heartbeats, shot clocks, buzzers) is tes
 | GET | `/health` | | liveness (cheap; for load balancers) |
 | GET | `/health/ready` | | readiness: DB answers (503 if not); point uptime monitors here |
 | POST | `/auth/guest` | | `{nickname, avatar?}` → `{user, token}` · 10/min per IP |
+| POST | `/auth/google` | | `{credential, guest_token?, nickname?, avatar?}` → `{user, token, account: new\|linked\|existing}` · 10/min per IP. Needs `GOOGLE_CLIENT_ID` (else 503) |
 | GET / PATCH / DELETE | `/auth/me` | Bearer | who am I / update `{nickname?, avatar?}` / erase me + my scores and throws |
-| POST | `/rooms` | Bearer | `{mode, difficulty, race_seconds}` → room (you're the host) · 20/min |
+| POST | `/rooms` | Bearer | `{mode, difficulty, race_seconds, best_of: 1\|3\|5}` → room (you're the host) · 20/min |
 | GET | `/rooms/{code}` | | room preview |
 | POST | `/rooms/{code}/join` | Bearer | take a seat (409 if full / already playing) · 30/min |
 | POST | `/scores` | Bearer | solo run `{mode, difficulty, score, shots, makes}` → `{best, rank}` · 30/min |
@@ -48,7 +49,7 @@ the makes, or more than one shot per second of a timed run. Multiplayer scores a
 
 ## WebSocket `/ws/{code}?token=…`
 
-Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `leave`
+Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `settings{mode?, difficulty?, raceSeconds?, bestOf?}` (host, lobby only) · `leave`
 Server → client: `room_state{room, you}` · `presence{event: joined|left|disconnected|reconnected, player}` · `pong{t}` · `error{code, message}`
 
 Lifecycle: `lobby ⇄ ready → in_progress → finished → lobby`. `ready` is automatic when ≥2 players are
@@ -62,6 +63,27 @@ connected and all have readied up.
 | Players per room | 4 | `MAX_PLAYERS` |
 
 Close codes: `4000` no heartbeat · `4001` opened in another tab · `4401` bad token · `4404` no such room · `4409` full/playing.
+
+### Google sign-in
+
+The frontend's "Continue with Google" button (Google Identity Services) sends Google's signed ID token to
+`/auth/google`; the server verifies signature, audience (`GOOGLE_CLIENT_ID`) and expiry with `google-auth`, and
+stores only the account ID (`users.google_sub`). No email, name or photo is kept.
+
+- First sign-in on a device with a guest: that guest is linked (keeps look, scores, wins).
+- Google account already linked: you get that player, on a new token for this device (`auth_tokens`), so
+  signing in on a phone doesn't sign the laptop out.
+- Otherwise a new player is created from the `nickname`/`avatar` sent along.
+
+`DELETE /auth/me` also removes every device token.
+
+### Series and lobby settings
+
+Rooms play a single game or a best-of-3/5 series (`room.series = {best_of, wins, games, winner}` in every
+`room_state`). Each finished game adds a win to its sole winner (shared wins and aborted games add none);
+wins carry across `rematch` until someone reaches `best_of // 2 + 1`, and the rematch after that starts a
+fresh series. The host can send `settings` in the lobby to change mode, difficulty, race length or series
+length without a new room; that un-readies everyone and resets the series.
 
 ## Matches (Week 7)
 

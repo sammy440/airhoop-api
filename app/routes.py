@@ -1,6 +1,7 @@
 """REST and WebSocket endpoints."""
 
 import logging
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
@@ -9,13 +10,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy import delete, func, text, update
 from sqlmodel import Session, select
 
-from .auth import CurrentUser, SessionDep, create_guest, user_from_token
+from .auth import CurrentUser, GoogleTokenError, SessionDep, create_guest, issue_token, user_from_token
 from .db import get_engine
-from .models import Match, Score, Throw, User
+from .models import AuthToken, Match, Score, Throw, User
 from .ratelimit import client_ip, rate_limit
 from .rooms import RoomError, RoomManager
 from .schemas import (
     ClientError,
+    GoogleOut,
+    GoogleSignIn,
     GuestCreate,
     GuestOut,
     LeaderboardEntry,
@@ -65,13 +68,48 @@ def ready(request: Request, response: Response) -> dict[str, object]:
 
 
 def user_out(user: User) -> UserOut:
-    return UserOut(id=user.id, nickname=user.nickname, avatar=user.avatar)
+    return UserOut(id=user.id, nickname=user.nickname, avatar=user.avatar, google=user.google_sub is not None)
 
 
 @router.post("/auth/guest", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit("guest", 10, 60))])
 def guest(body: GuestCreate, session: SessionDep) -> GuestOut:
     user, token = create_guest(session, body.nickname, body.avatar.model_dump() if body.avatar else None)
     return GuestOut(user=user_out(user), token=token)
+
+
+@router.post("/auth/google", dependencies=[Depends(rate_limit("google", 10, 60))])
+def google_sign_in(body: GoogleSignIn, session: SessionDep, request: Request) -> GoogleOut:
+    """
+    Sign in with a Google ID token. Only Google's account ID is stored (no email, name or photo).
+    Already linked → that player, on a new token for this device. Otherwise this device's
+    guest is linked (keeping its look and scores), or a new player is created.
+    """
+    client_id = request.app.state.settings.google_client_id
+    if not client_id:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, {"code": "google_disabled", "message": "Google sign-in isn't set up on this server"})
+    try:
+        sub = request.app.state.verify_google(body.credential, client_id)
+    except GoogleTokenError as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, {"code": "bad_google_token", "message": "Google sign-in failed. Try again."}) from e
+
+    user = session.exec(select(User).where(User.google_sub == sub)).first()
+    account = "existing"
+    if user is None:
+        guest = user_from_token(session, body.guest_token)
+        if guest is not None and guest.google_sub is None:
+            user, account = guest, "linked"
+        else:
+            # Unusable placeholder hash: this player only signs in through auth_tokens.
+            nickname = body.nickname or f"Player {secrets.randbelow(9000) + 1000}"
+            user = User(nickname=nickname, token_hash=secrets.token_hex(32), avatar=body.avatar.model_dump() if body.avatar else None)
+            account = "new"
+        user.google_sub = sub
+        session.add(user)
+        session.flush()
+    token = issue_token(session, user)
+    session.commit()
+    session.refresh(user)
+    return GoogleOut(user=user_out(user), token=token, account=account)
 
 
 @router.get("/auth/me")
@@ -95,6 +133,7 @@ def update_profile(body: ProfileUpdate, user: CurrentUser, session: SessionDep, 
 @router.delete("/auth/me", status_code=status.HTTP_204_NO_CONTENT)
 def delete_me(user: CurrentUser, session: SessionDep) -> None:
     """Erase this guest and everything recorded about them (scores, throws, match wins)."""
+    session.exec(delete(AuthToken).where(AuthToken.user_id == user.id))
     session.exec(delete(Throw).where(Throw.user_id == user.id))
     session.exec(delete(Score).where(Score.user_id == user.id))
     session.exec(update(Match).where(Match.winner_id == user.id).values(winner_id=None))
@@ -107,7 +146,7 @@ def delete_me(user: CurrentUser, session: SessionDep) -> None:
 
 @router.post("/rooms", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit("rooms", 20, 60))])
 def create_room(body: RoomCreate, user: CurrentUser, request: Request) -> RoomOut:
-    room = manager_of(request).create(str(user.id), user.nickname, body.mode, body.difficulty, body.race_seconds, avatar=user.avatar)
+    room = manager_of(request).create(str(user.id), user.nickname, body.mode, body.difficulty, body.race_seconds, avatar=user.avatar, best_of=body.best_of)
     return RoomOut(**room.public())
 
 

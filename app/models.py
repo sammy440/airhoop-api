@@ -22,6 +22,19 @@ class User(SQLModel, table=True):
     token_hash: str = Field(max_length=64, unique=True, index=True)
     # Player look (gender, skin, hair, kit colours, number); validated by schemas.Avatar.
     avatar: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # Google account ID ("sub") once linked. Only the ID is kept: no email, name or photo.
+    google_sub: str | None = Field(default=None, max_length=255, unique=True, index=True)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class AuthToken(SQLModel, table=True):
+    """Extra sign-in tokens (one per device signed in with Google). Only the hash is stored."""
+
+    __tablename__ = "auth_tokens"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
+    token_hash: str = Field(max_length=64, unique=True, index=True)
     created_at: datetime = Field(default_factory=utcnow)
 
 

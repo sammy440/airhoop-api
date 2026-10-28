@@ -19,7 +19,7 @@ def test_guest_session_and_me(client, engine):
     token, user_id = make_guest(client, "Dayo")
     me = client.get("/auth/me", headers=auth(token))
     assert me.status_code == 200
-    assert me.json() == {"id": user_id, "nickname": "Dayo", "avatar": None}
+    assert me.json() == {"id": user_id, "nickname": "Dayo", "avatar": None, "google": False}
     with Session(engine) as s:
         user = s.exec(select(User)).one()
         assert user.token_hash == hash_token(token)

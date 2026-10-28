@@ -36,11 +36,30 @@ class UserOut(BaseModel):
     id: uuid.UUID
     nickname: str
     avatar: Avatar | None = None
+    # Linked to a Google account (the player can sign in on other devices).
+    google: bool = False
 
 
 class GuestOut(BaseModel):
     user: UserOut
     token: str
+
+
+class GoogleSignIn(BaseModel):
+    # ID token from Google Identity Services.
+    credential: Annotated[str, StringConstraints(min_length=20, max_length=4096)]
+    # This device's guest token, if any: a first Google sign-in links that guest (keeping its scores).
+    guest_token: Annotated[str, StringConstraints(max_length=128)] | None = None
+    # Used only when a brand-new player is created (no guest, no linked account yet).
+    nickname: Nickname | None = None
+    avatar: Avatar | None = None
+
+
+class GoogleOut(BaseModel):
+    user: UserOut
+    token: str
+    # new: a player was created · linked: this device's guest is now on Google · existing: signed in to a linked player
+    account: Literal["new", "linked", "existing"]
 
 
 class ProfileUpdate(BaseModel):
@@ -53,6 +72,8 @@ class RoomCreate(BaseModel):
     difficulty: Difficulty = "starter"
     # Race length; ignored for shootouts.
     race_seconds: int = Field(60, ge=30, le=300)
+    # Series length: first to best_of // 2 + 1 wins, across rematches.
+    best_of: Literal[1, 3, 5] = 1
 
 
 class PlayerOut(BaseModel):
@@ -64,6 +85,13 @@ class PlayerOut(BaseModel):
     host: bool
 
 
+class SeriesOut(BaseModel):
+    best_of: int
+    wins: dict[str, int]
+    games: int
+    winner: str | None = None
+
+
 class RoomOut(BaseModel):
     code: str
     phase: Literal["lobby", "ready", "in_progress", "finished"]
@@ -73,6 +101,7 @@ class RoomOut(BaseModel):
     race_seconds: int
     host_id: str
     players: list[PlayerOut]
+    series: SeriesOut
 
 
 # Most points one make can earn: (2 + swish 1) × streak ×3 × difficulty.

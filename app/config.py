@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Match clock resolution (shootout turn timers, race buzzer); 0 disables it.
     tick_interval_s: float = 0.2
 
+    # OAuth client ID for "Sign in with Google" (same one the frontend uses); empty disables it.
+    google_client_id: str = ""
+
     rate_limit_enabled: bool = True
     sentry_dsn: str = ""
     environment: str = "development"

@@ -88,6 +88,8 @@ class MatchEngine:
         self.stats = {pid: PlayerStats(wind=roll_wind(self.diff, self.rng)) for pid in self.order}
         self.finished = False
         self.result: Msg | None = None
+        # Set by the room once this game has counted towards its series.
+        self.series_recorded = False
         self.shot_count = 0
         # Shootout state
         self.round = 1

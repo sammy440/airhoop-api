@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
+from .auth import verify_google_credential
 from .config import Settings, get_settings
 from .db import get_engine
 from .models import Match, Score, Throw
@@ -113,6 +114,8 @@ def create_app(settings: Settings | None = None, manager: RoomManager | None = N
     app = FastAPI(title="AirHoops API", version="0.1.0", lifespan=lifespan)
     app.state.rooms = manager
     app.state.settings = settings
+    # Swappable so tests don't call Google.
+    app.state.verify_google = verify_google_credential
     app.state.limiter = limiter or RateLimiter(enabled=settings.rate_limit_enabled)
 
     @app.middleware("http")

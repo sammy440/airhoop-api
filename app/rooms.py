@@ -8,6 +8,11 @@ Lifecycle:  lobby ⇄ ready → in_progress → finished → (rematch) lobby
   • in_progress → finished  the match ends (or the host sends "end")
   • finished → lobby     host sends "rematch"
 
+Series: a room plays best-of-1, 3 or 5. Wins carry over rematches until someone
+reaches the target; the rematch after that starts a fresh series. The host can
+change mode / difficulty / race length / series length in the lobby
+("settings"), which un-readies everyone and resets the series.
+
 Presence:
   • A dropped socket keeps its seat for `reconnect_grace_s` (reloads, Wi-Fi blips).
   • A socket silent for `heartbeat_timeout_s` (no message, not even "ping") is closed.
@@ -29,11 +34,14 @@ from fastapi import WebSocket
 
 from .config import Settings
 from .game.physics import ShotSim
+from .game.rules import DIFFICULTIES
 from .match import MatchEngine, MatchError
 
 Phase = Literal["lobby", "ready", "in_progress", "finished"]
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L: easy to read aloud
 CODE_LENGTH = 5
+BEST_OF = (1, 3, 5)
+MODES = ("shootout", "race")
 
 # WebSocket close codes (4000-4999 are application-defined)
 CLOSE_HEARTBEAT = 4000
@@ -81,6 +89,22 @@ class Room:
     players: dict[str, Player] = field(default_factory=dict)
     match_id: str | None = None
     match: MatchEngine | None = None
+    best_of: int = 1
+    # Games won in the current series, by player id (players who left keep theirs).
+    series_wins: dict[str, int] = field(default_factory=dict)
+    series_games: int = 0
+
+    @property
+    def wins_needed(self) -> int:
+        return self.best_of // 2 + 1
+
+    @property
+    def series_winner(self) -> str | None:
+        return next((pid for pid, w in self.series_wins.items() if w >= self.wins_needed), None)
+
+    def reset_series(self) -> None:
+        self.series_wins = {}
+        self.series_games = 0
 
     def public(self) -> dict[str, Any]:
         return {
@@ -91,6 +115,12 @@ class Room:
             "max_players": self.max_players,
             "race_seconds": self.race_seconds,
             "host_id": self.host_id,
+            "series": {
+                "best_of": self.best_of,
+                "wins": self.series_wins,
+                "games": self.series_games,
+                "winner": self.series_winner,
+            },
             "players": [
                 {
                     "id": p.id,
@@ -141,7 +171,16 @@ class RoomManager:
             raise RoomError("room_not_found", "No room with that code", 404)
         return room
 
-    def create(self, user_id: str, nickname: str, mode: str, difficulty: str, race_seconds: int = 60, avatar: dict[str, Any] | None = None) -> Room:
+    def create(
+        self,
+        user_id: str,
+        nickname: str,
+        mode: str,
+        difficulty: str,
+        race_seconds: int = 60,
+        avatar: dict[str, Any] | None = None,
+        best_of: int = 1,
+    ) -> Room:
         now = self.clock()
         room = Room(
             code=self._new_code(),
@@ -151,6 +190,7 @@ class RoomManager:
             max_players=self.settings.max_players,
             created_at=now,
             race_seconds=race_seconds,
+            best_of=best_of if best_of in BEST_OF else 1,
         )
         # The creator holds a seat until their socket connects (or the grace period ends).
         room.players[user_id] = Player(id=user_id, nickname=nickname, joined_at=now, disconnected_at=now, avatar=avatar)
@@ -282,6 +322,7 @@ class RoomManager:
 
     async def _finish_match(self, room: Room) -> None:
         room.phase = "finished"
+        self._record_series(room)
         if self.on_finish:
             await self.on_finish(room)
         await self.broadcast_state(room)
@@ -339,6 +380,7 @@ class RoomManager:
             room.phase = "finished"
             if room.match and not room.match.finished:
                 room.match.abort()
+            self._record_series(room)
         elif kind == "rematch":
             if not is_host:
                 raise RoomError("not_host", "Only the host can start a rematch")
@@ -347,14 +389,58 @@ class RoomManager:
             room.phase = "lobby"
             room.match_id = None
             room.match = None
+            if room.series_winner is not None:
+                room.reset_series()  # that series is decided: the next game starts a new one
             for p in room.players.values():
                 p.ready = False
+        elif kind == "settings":
+            if not is_host:
+                raise RoomError("not_host", "Only the host can change the game")
+            if room.phase not in ("lobby", "ready"):
+                raise RoomError("bad_phase", "Change the game between matches")
+            self._apply_settings(room, msg)
         elif kind == "leave":
             self._remove(room, player.id)
         else:
             raise RoomError("unknown_message", f"Unknown message type: {kind!r}")
         self._recompute_phase(room)
         return True
+
+    @staticmethod
+    def _apply_settings(room: Room, msg: dict[str, Any]) -> None:
+        mode = msg.get("mode", room.mode)
+        difficulty = msg.get("difficulty", room.difficulty)
+        race_seconds = msg.get("raceSeconds", room.race_seconds)
+        best_of = msg.get("bestOf", room.best_of)
+        if mode not in MODES:
+            raise RoomError("invalid_settings", "Unknown mode")
+        if difficulty not in DIFFICULTIES:
+            raise RoomError("invalid_settings", "Unknown difficulty")
+        if isinstance(race_seconds, bool) or not isinstance(race_seconds, int) or not 30 <= race_seconds <= 300:
+            raise RoomError("invalid_settings", "Race length must be 30–300 seconds")
+        if best_of not in BEST_OF or isinstance(best_of, bool):
+            raise RoomError("invalid_settings", "Series must be best of 1, 3 or 5")
+        changed = (mode, difficulty, race_seconds, best_of) != (room.mode, room.difficulty, room.race_seconds, room.best_of)
+        if not changed:
+            return
+        room.mode, room.difficulty, room.race_seconds, room.best_of = mode, difficulty, race_seconds, best_of
+        room.reset_series()  # a different game is a different contest
+        # Everyone confirms the new game before it can start.
+        for p in room.players.values():
+            p.ready = False
+
+    @staticmethod
+    def _record_series(room: Room) -> None:
+        """Counts a finished game towards the series (aborted games don't count)."""
+        m = room.match
+        if m is None or m.result is None or m.series_recorded:
+            return
+        m.series_recorded = True
+        if m.result["reason"] == "aborted":
+            return
+        room.series_games += 1
+        if (winner := m.result["winner"]) is not None:
+            room.series_wins[winner] = room.series_wins.get(winner, 0) + 1
 
     # ── Housekeeping ──
 
