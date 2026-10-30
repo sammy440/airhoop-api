@@ -1,7 +1,10 @@
 import uuid
+from datetime import timedelta
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
+
+from app.game import daily
 
 Nickname = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=20, pattern=r"^[\w .\-]+$")]
 MatchMode = Literal["shootout", "race"]
@@ -112,11 +115,11 @@ class ScoreCreate(BaseModel):
     """
     A finished solo run. Solo play is simulated in the browser, so this is
     self-reported; the run stats let the server reject impossible results.
-    `score` is points for timed runs and the best streak for streak runs.
+    `score` is points for timed and daily runs and the best streak for streak runs.
     """
 
-    # Mode key as used for bests, e.g. "streak", "timed60" (free play has no leaderboard)
-    mode: Annotated[str, StringConstraints(pattern=r"^(free|streak|timed\d{2,4})$")]
+    # Mode key as used for bests, e.g. "streak", "timed60", "daily20261030" (free play has no leaderboard)
+    mode: Annotated[str, StringConstraints(pattern=r"^(free|streak|timed\d{2,4}|daily\d{8})$")]
     difficulty: Difficulty
     score: int = Field(ge=0, le=100_000)
     shots: int = Field(ge=0, le=10_000)
@@ -136,6 +139,16 @@ class ScoreCreate(BaseModel):
             if not 30 <= seconds <= 1800:
                 raise ValueError("timed runs are 30 s to 30 min")
             if self.shots > seconds:  # a shot takes well over a second
+                raise ValueError("too many shots for the clock")
+        if self.mode.startswith("daily"):
+            day = daily.parse_key(self.mode)
+            # ±1 day: a run that started before midnight, or a device clock a little off.
+            if day is None or abs(day - daily.today()) > timedelta(days=1):
+                raise ValueError("not a current daily challenge")
+            rules = daily.daily_rules(day)
+            if self.difficulty != rules.difficulty:
+                raise ValueError("wrong difficulty for that day's challenge")
+            if self.shots > rules.seconds:
                 raise ValueError("too many shots for the clock")
         return self
 

@@ -45,7 +45,12 @@ Room and match timing (reconnect grace, heartbeats, shot clocks, buzzers) is tes
 
 Solo scores are simulated in the browser, so they're self-reported, but the server rejects impossible runs:
 more makes than shots, more points than `makes × max points per make` for the difficulty, a streak longer than
-the makes, or more than one shot per second of a timed run. Multiplayer scores are fully server-refereed.
+the makes, or more than one shot per second of a timed run.
+
+Daily Challenge runs post with mode `daily20261030` (the UTC date). `app/game/daily.py` works out each day's
+difficulty and clock exactly as the frontend's `daily.ts` does, so a daily run is also rejected for the wrong
+difficulty, too many shots for that day's clock, or a date more than a day from today. Read a day's board with
+`GET /leaderboard?mode=daily20261030`. Multiplayer scores are fully server-refereed.
 
 ## WebSocket `/ws/{code}?token=…`
 
