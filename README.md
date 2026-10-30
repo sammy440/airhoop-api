@@ -38,6 +38,8 @@ Room and match timing (reconnect grace, heartbeats, shot clocks, buzzers) is tes
 | POST | `/rooms` | Bearer | `{mode, difficulty, race_seconds, best_of: 1\|3\|5}` → room (you're the host) · 20/min |
 | GET | `/rooms/{code}` | | room preview |
 | POST | `/rooms/{code}/join` | Bearer | take a seat (409 if full / already playing) · 30/min |
+| POST | `/quickmatch` | Bearer | `{difficulty: any\|rookie\|…}` → `{status: waiting, waiting, waited_s}` or `{status: matched, code}` · poll every ~2 s; you leave the queue after 10 s without a poll (`QUEUE_TIMEOUT_S`) · 60/min |
+| DELETE | `/quickmatch` | Bearer | leave the queue |
 | POST | `/scores` | Bearer | solo run `{mode, difficulty, score, shots, makes}` → `{best, rank}` · 30/min |
 | GET | `/leaderboard?mode=timed60&difficulty=&period=day\|week\|all&limit=20` | | best per player, ties share a rank, with avatars |
 | GET | `/leaderboard/me?mode=&difficulty=` | Bearer | your best, runs and rank for day / week / all |
@@ -57,7 +59,9 @@ difficulty, too many shots for that day's clock, or a date more than a day from 
 Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `settings{mode?, difficulty?, raceSeconds?, bestOf?}` (host, lobby only) · `leave`
 Server → client: `room_state{room, you}` · `presence{event: joined|left|disconnected|reconnected, player}` · `pong{t}` · `error{code, message}`
 
-Lifecycle: `lobby ⇄ ready → in_progress → finished → lobby`. `ready` is automatic when ≥2 players are
+Lifecycle: `lobby ⇄ ready → in_progress → finished → lobby`. Quick-match rooms (`quick: true`) are a 60 s race whose
+two seats start ready, so the first game starts by itself as soon as both players are connected; after that
+they behave like any room (the longer-waiting player is host). `ready` is automatic when ≥2 players are
 connected and all have readied up.
 
 | Rule | Default | Env |

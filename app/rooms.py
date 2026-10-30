@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -42,6 +43,10 @@ CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L: easy to read
 CODE_LENGTH = 5
 BEST_OF = (1, 3, 5)
 MODES = ("shootout", "race")
+# Quick match: strangers play a race (both shoot at once, nobody waits for a turn).
+QUICK_MODE = "race"
+QUICK_RACE_S = 60
+QUICK_FALLBACK_DIFFICULTY = "starter"
 
 # WebSocket close codes (4000-4999 are application-defined)
 CLOSE_HEARTBEAT = 4000
@@ -93,6 +98,9 @@ class Room:
     # Games won in the current series, by player id (players who left keep theirs).
     series_wins: dict[str, int] = field(default_factory=dict)
     series_games: int = 0
+    # Made by quick match: both seats start ready, and the first game starts once both are connected.
+    quick: bool = False
+    auto_start: bool = False
 
     @property
     def wins_needed(self) -> int:
@@ -115,6 +123,7 @@ class Room:
             "max_players": self.max_players,
             "race_seconds": self.race_seconds,
             "host_id": self.host_id,
+            "quick": self.quick,
             "series": {
                 "best_of": self.best_of,
                 "wins": self.series_wins,
@@ -135,6 +144,20 @@ class Room:
         }
 
 
+@dataclass
+class QueueEntry:
+    """A player waiting for a quick match. They poll; one who stops polling drops out."""
+
+    user_id: str
+    nickname: str
+    avatar: dict[str, Any] | None
+    difficulty: str  # a difficulty, or "any"
+    since: float
+    last_poll: float
+    # Set when someone else's poll paired them; handed over on their next poll.
+    room_code: str | None = None
+
+
 Hook = Callable[[Room], Awaitable[None]]
 ThrowHook = Callable[[Room, str, dict[str, Any], ShotSim, int], Awaitable[None]]
 
@@ -144,6 +167,9 @@ class RoomManager:
         self.settings = settings
         self.clock = clock
         self.rooms: dict[str, Room] = {}
+        self.queue: dict[str, QueueEntry] = {}
+        # REST handlers run in a thread pool: two polls must never grab the same partner.
+        self._queue_lock = threading.Lock()
         self._lock: asyncio.Lock | None = None
         # Persistence hooks (set by the app): create / close the Match row.
         self.on_start: Hook | None = None
@@ -197,6 +223,59 @@ class RoomManager:
         self.rooms[room.code] = room
         return room
 
+    # ── Quick match ──
+
+    def quick_match(self, user_id: str, nickname: str, difficulty: str, avatar: dict[str, Any] | None = None) -> dict[str, Any]:
+        """
+        One poll from a player looking for a game: pairs them with the longest-waiting compatible
+        player, or keeps them in the queue. Returns {"status": "matched", "code"} or
+        {"status": "waiting", "waiting": players in the queue, "waited_s"}.
+        """
+        with self._queue_lock:
+            now = self.clock()
+            self._expire_queue(now)
+            entry = self.queue.get(user_id)
+            if entry is not None and entry.room_code is not None:
+                del self.queue[user_id]
+                room = self.rooms.get(entry.room_code)
+                if room is not None and user_id in room.players:
+                    return {"status": "matched", "code": room.code}
+                entry = None  # that room's gone (the other player left): queue again
+            if entry is None or entry.difficulty != difficulty:
+                entry = QueueEntry(user_id, nickname, avatar, difficulty, since=entry.since if entry else now, last_poll=now)
+                self.queue[user_id] = entry
+            entry.last_poll, entry.nickname, entry.avatar = now, nickname, avatar
+
+            partner = min(
+                (e for e in self.queue.values() if e.user_id != user_id and e.room_code is None and _compatible(e.difficulty, difficulty)),
+                key=lambda e: e.since,
+                default=None,
+            )
+            if partner is None:
+                waiting = sum(1 for e in self.queue.values() if e.room_code is None)
+                return {"status": "waiting", "waiting": waiting, "waited_s": round(now - entry.since, 1)}
+
+            chosen = next((d for d in (difficulty, partner.difficulty) if d != "any"), QUICK_FALLBACK_DIFFICULTY)
+            room = self.create(partner.user_id, partner.nickname, QUICK_MODE, chosen, QUICK_RACE_S, avatar=partner.avatar)
+            self.join(room.code, user_id, nickname, avatar)
+            room.quick = room.auto_start = True
+            for p in room.players.values():
+                p.ready = True
+            partner.room_code = room.code
+            del self.queue[user_id]
+            return {"status": "matched", "code": room.code}
+
+    def leave_queue(self, user_id: str) -> None:
+        with self._queue_lock:
+            self.queue.pop(user_id, None)
+
+    def _expire_queue(self, now: float) -> None:
+        for e in list(self.queue.values()):
+            # A paired player who never came back for their room loses it with their seat.
+            limit = self.settings.reconnect_grace_s if e.room_code else self.settings.queue_timeout_s
+            if now - e.last_poll > limit:
+                del self.queue[e.user_id]
+
     def join(self, code: str, user_id: str, nickname: str, avatar: dict[str, Any] | None = None) -> Room:
         room = self.get(code)
         if user_id in room.players:
@@ -245,7 +324,21 @@ class RoomManager:
             # Rejoining mid-match: rebuild the match view.
             for m in room.match.snapshot():
                 await self._send(ws, {**m, "serverTime": self.clock()})
+        elif room.auto_start and room.phase == "ready":
+            await self._auto_start(room)
         return room
+
+    async def _auto_start(self, room: Room) -> None:
+        """Quick-match rooms start their first game as soon as both players are connected."""
+        async with self.lock:
+            if not room.auto_start or room.phase != "ready":
+                return
+            room.auto_start = False
+            self._begin_match(room)
+        await self._run_hooks(room, "start")
+        await self.broadcast_state(room)
+        assert room.match is not None
+        await self._match_out(room, [room.match.start_msg(), room.match.scoreboard(), *filter(None, [room.match.turn_msg()])])
 
     async def disconnect(self, code: str, user_id: str, ws: WebSocket) -> None:
         async with self.lock:
@@ -294,6 +387,8 @@ class RoomManager:
                 await self._match_out(room, [room.match.start_msg(), room.match.scoreboard(), *filter(None, [room.match.turn_msg()])])
             elif kind == "end" and room.match and room.match.result:
                 await self._match_out(room, [room.match.result])
+            if room.auto_start and room.phase == "ready":
+                await self._auto_start(room)  # quick match: someone un-readied, then readied again
         return True
 
     async def _throw(self, room: Room, player: Player, ws: WebSocket, msg: dict[str, Any]) -> None:
@@ -369,9 +464,7 @@ class RoomManager:
                 raise RoomError("not_host", "Only the host can start")
             if room.phase != "ready":
                 raise RoomError("not_ready", "Everyone must be connected and ready (2+ players)")
-            room.phase = "in_progress"
-            mode = room.mode if room.mode in ("shootout", "race") else "race"
-            room.match = MatchEngine(mode, room.difficulty, list(room.players), self.clock(), race_seconds=room.race_seconds)
+            self._begin_match(room)
         elif kind == "end":
             if not is_host:
                 raise RoomError("not_host", "Only the host can end the match")
@@ -405,6 +498,12 @@ class RoomManager:
             raise RoomError("unknown_message", f"Unknown message type: {kind!r}")
         self._recompute_phase(room)
         return True
+
+    def _begin_match(self, room: Room) -> None:
+        room.phase = "in_progress"
+        room.auto_start = False
+        mode = room.mode if room.mode in ("shootout", "race") else "race"
+        room.match = MatchEngine(mode, room.difficulty, list(room.players), self.clock(), race_seconds=room.race_seconds)
 
     @staticmethod
     def _apply_settings(room: Room, msg: dict[str, Any]) -> None:
@@ -448,6 +547,8 @@ class RoomManager:
         """Expire abandoned seats, drop silent sockets, delete empty rooms."""
         now = self.clock()
         s = self.settings
+        with self._queue_lock:
+            self._expire_queue(now)
         for room in list(self.rooms.values()):
             stale: list[Player] = []
             expired: list[Player] = []
@@ -531,3 +632,7 @@ class RoomManager:
             await ws.close(code=code, reason=reason)
         except Exception:
             pass
+
+
+def _compatible(a: str, b: str) -> bool:
+    return a == b or "any" in (a, b)

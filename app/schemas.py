@@ -105,6 +105,21 @@ class RoomOut(BaseModel):
     host_id: str
     players: list[PlayerOut]
     series: SeriesOut
+    # Made by quick match (strangers, auto-started)
+    quick: bool = False
+
+
+class QuickMatchRequest(BaseModel):
+    difficulty: Difficulty | Literal["any"] = "any"
+
+
+class QuickMatchOut(BaseModel):
+    status: Literal["waiting", "matched"]
+    # Matched: the room to join
+    code: str | None = None
+    # Waiting: players in the queue (you included) and how long you've waited
+    waiting: int | None = None
+    waited_s: float | None = None
 
 
 # Most points one make can earn: (2 + swish 1) × streak ×3 × difficulty.

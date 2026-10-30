@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     reconnect_grace_s: float = 30.0
     # Connected sockets that send nothing (not even a ping) for this long are dropped.
     heartbeat_timeout_s: float = 25.0
+    # Quick match: a queued player who stops polling for this long drops out of the queue.
+    queue_timeout_s: float = 10.0
     # How often the background sweeper runs; 0 disables it (tests drive it manually).
     sweep_interval_s: float = 5.0
     # Match clock resolution (shootout turn timers, race buzzer); 0 disables it.

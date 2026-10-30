@@ -25,6 +25,8 @@ from .schemas import (
     PersonalBest,
     PersonalBests,
     ProfileUpdate,
+    QuickMatchOut,
+    QuickMatchRequest,
     RoomCreate,
     RoomOut,
     ScoreCreate,
@@ -164,6 +166,20 @@ def join_room(code: str, user: CurrentUser, request: Request) -> RoomOut:
         return RoomOut(**manager_of(request).join(code, str(user.id), user.nickname, avatar=user.avatar).public())
     except RoomError as e:
         raise room_error(e) from e
+
+
+# ── Quick match ──
+
+
+@router.post("/quickmatch", dependencies=[Depends(rate_limit("quickmatch", 60, 60))])
+def quick_match(body: QuickMatchRequest, user: CurrentUser, request: Request) -> QuickMatchOut:
+    """Poll every ~2 s while looking for a game: you stay queued only while you keep polling."""
+    return QuickMatchOut(**manager_of(request).quick_match(str(user.id), user.nickname, body.difficulty, avatar=user.avatar))
+
+
+@router.delete("/quickmatch", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_quick_match(user: CurrentUser, request: Request) -> None:
+    manager_of(request).leave_queue(str(user.id))
 
 
 # ── Scores / leaderboard ──
