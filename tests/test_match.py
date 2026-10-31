@@ -83,7 +83,7 @@ def test_server_result_matches_physics_and_scoring():
     assert shot["type"] == "shot_result" and shot["scored"] and shot["swish"] and shot["points"] == 3
     again = simulate_shot(throw_to_launch(**MAKE), m.court, wind=0, phase=shot["phase"])
     assert again.result == sim.result
-    assert shot["path"][0] == [0.0, 0.0, 2.1] and shot["path"][-1] == list(sim.path[-1])
+    assert shot["path"][0] == [0.0, 0.0, 2.1, 0.0] and shot["path"][-1] == list(sim.path[-1])
     assert m.stats["a"].points == 3 and m.stats["a"].makes == 1
     assert types(msgs) == ["shot_result", "scoreboard"]
 
