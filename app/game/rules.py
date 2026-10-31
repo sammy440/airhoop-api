@@ -22,6 +22,8 @@ class LaunchTuning:
     arc_gain: float = 14
     min_angle: float = 35
     max_angle: float = 70
+    aim_gain: float = 0.3
+    max_aim: float = 12
 
 
 TUNING = LaunchTuning()
@@ -31,7 +33,7 @@ def clamp(v: float, lo: float, hi: float) -> float:
     return min(hi, max(lo, v))
 
 
-def throw_to_launch(power: float, angle: float, arc: float, tuning: LaunchTuning = TUNING) -> Launch:
+def throw_to_launch(power: float, angle: float, arc: float, aim: float = 0.0, tuning: LaunchTuning = TUNING) -> Launch:
     """
     Same mapping as throwToLaunch() in shot.ts, except power is NOT clamped to
     0..1: calibrated clients legitimately send slightly outside it (their
@@ -40,6 +42,7 @@ def throw_to_launch(power: float, angle: float, arc: float, tuning: LaunchTuning
     return Launch(
         speed=tuning.min_speed + power * (tuning.max_speed - tuning.min_speed),
         angle=clamp(tuning.base_angle + (angle - 30) * tuning.angle_gain + (arc - 0.7) * tuning.arc_gain, tuning.min_angle, tuning.max_angle),
+        aim=clamp(aim * tuning.aim_gain, -tuning.max_aim, tuning.max_aim),
     )
 
 
