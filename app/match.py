@@ -10,7 +10,7 @@ Modes
             wins; ties go to sudden-death rounds among the tied leaders.
   race      Everyone shoots freely until the buzzer; most points wins.
 
-Trust model: clients send only {power, angle, arc, t}. The server validates
+Trust model: clients send only {power, angle, arc, aim, t}. The server validates
 ranges and pacing, decides the wind, re-simulates the shot with the same
 deterministic physics the browser uses, and broadcasts the result.
 """
@@ -161,9 +161,10 @@ class MatchEngine:
         st = self.stats[pid]
 
         power, angle, arc = (payload.get(k) for k in ("power", "angle", "arc"))
-        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (power, angle, arc)):
-            raise MatchError("invalid_throw", "Throw needs numeric power, angle and arc")
-        if not (POWER_RANGE[0] <= power <= POWER_RANGE[1] and -90 <= angle <= 90 and 0 <= arc <= 1):
+        aim = payload.get("aim", 0)  # sideways throw angle (degrees); older clients don't send it
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (power, angle, arc, aim)):
+            raise MatchError("invalid_throw", "Throw needs numeric power, angle, arc and aim")
+        if not (POWER_RANGE[0] <= power <= POWER_RANGE[1] and -90 <= angle <= 90 and 0 <= arc <= 1 and -90 <= aim <= 90):
             raise MatchError("invalid_throw", "Throw values out of range")
 
         if self.mode == "shootout":
@@ -182,7 +183,7 @@ class MatchEngine:
         if self.ends_at is not None and release > self.ends_at:
             raise MatchError("time_up", "The buzzer already went")
 
-        launch = throw_to_launch(power, angle, arc)
+        launch = throw_to_launch(power, angle, arc, aim)
         wind = st.wind
         phase = release - self.start_at
         sim = simulate_shot(launch, self.court, wind=wind, phase=phase)
@@ -352,14 +353,15 @@ class MatchEngine:
             "bank": r.bank,
             "miss": r.miss,
             "error": r.error,
+            "lateral": r.lateral,
             "points": points,
             "multiplier": multiplier,
             "streak": self.stats[pid].streak,
-            "launch": {"speed": sim.launch.speed, "angle": sim.launch.angle},
+            "launch": {"speed": sim.launch.speed, "angle": sim.launch.angle, "aim": sim.launch.aim},
             "wind": wind,
             "phase": phase,
             "releaseAt": release,
             "duration": sim.duration,
             "path": [list(p) for p in sim.path[::PATH_STRIDE]] + ([list(sim.path[-1])] if (len(sim.path) - 1) % PATH_STRIDE else []),
-            "events": [{"t": e.t, "type": e.type, "x": e.x, "y": e.y, "impact": e.impact} for e in sim.events],
+            "events": [{"t": e.t, "type": e.type, "x": e.x, "y": e.y, "z": e.z, "impact": e.impact} for e in sim.events],
         }

@@ -24,7 +24,7 @@ createdb airhoops_test   # once
 .venv/bin/pytest
 ```
 
-Room and match timing (reconnect grace, heartbeats, shot clocks, buzzers) is tested with an injectable fake clock; the whole suite (incl. 480 physics-parity cases) runs in ~9 s.
+Room and match timing (reconnect grace, heartbeats, shot clocks, buzzers) is tested with an injectable fake clock; the whole suite (incl. 1,440 physics-parity cases) runs in ~30 s.
 
 ## REST
 
@@ -108,7 +108,7 @@ When the host sends `start`, the server runs the match (`app/match.py`):
 
 Extra messages:
 
-- Client → server: `throw{power, angle, arc, t}` — the only per-shot data a client sends.
+- Client → server: `throw{power, angle, arc, aim, t}` — the only per-shot data a client sends (`aim`: sideways throw angle in degrees, + = right; 0 if omitted).
 - Server → client: `match_start{mode, order, startAt, endsAt}`, `turn{playerId, shotsLeft, round, suddenDeath, availableAt, deadline}`,
   `shot_result{playerId, scored, swish, points, multiplier, launch, wind, phase, path, events, duration}`,
   `scoreboard{scores}`, `forfeit{playerId}`, `match_end{winner, winners, standings, reason}`. All carry `serverTime`.
@@ -116,7 +116,7 @@ Extra messages:
 **Anti-cheat:** the server validates power/angle/arc ranges, enforces a 0.8 s cooldown and one ball in the air
 per player, enforces turn order, chooses the wind, trusts the client's release time only within 0.5 s of its
 own clock, then re-simulates the throw with `app/game/physics.py` (a line-for-line port of the browser's
-physics) and scores it. `tests/test_physics_parity.py` checks 480 shots against fixtures exported from the
+physics, 3D: x toward the hoop, y up, z sideways) and scores it. `tests/test_physics_parity.py` checks 1,440 shots against fixtures exported from the
 TypeScript code; regenerate with `GEN_PARITY=1 npx vitest run src/lib/game/parity.gen.test.ts` in the frontend.
 
 **Dropped players:** a disconnected player keeps their seat for 30 s (turns still time out); after that, or on

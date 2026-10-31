@@ -231,3 +231,15 @@ def test_abort_has_no_winner():
     m = race()
     end = m.abort()
     assert end["reason"] == "aborted" and end["winners"] == []
+
+
+def test_aim_steers_the_shot_and_is_validated():
+    m = race()
+    wide = m.throw("a", {**MAKE, "aim": 40}, START + 1)[0][0]
+    assert not wide["scored"] and wide["lateral"] > 0.2 and wide["launch"]["aim"] > 0
+    for bad in (91, "left", None):
+        with pytest.raises(MatchError) as e:
+            m.throw("b", {**MAKE, "aim": bad}, START + 1)
+        assert e.value.code == "invalid_throw"
+    # Older clients send no aim: straight.
+    assert m.throw("b", MAKE, START + 1)[0][0]["launch"]["aim"] == 0
