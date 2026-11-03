@@ -9,6 +9,12 @@ Modes
   shootout  Turn-based: players alternate, SHOOTOUT_SHOTS each; most makes
             wins; ties go to sudden-death rounds among the tied leaders.
   race      Everyone shoots freely until the buzzer; most points wins.
+  horse     H-O-R-S-E. The setter shoots; a make sets the challenge by its kind
+            (swish, bank, or any other make: "bucket") and everyone else in turn
+            gets one try to match it (a bucket is matched by any make). Missing
+            the match earns a letter; five letters and you're out. The setter
+            keeps setting until they miss, then the next player sets. Last one
+            standing wins.
 
 Trust model: clients send only {power, angle, arc, aim, t}. The server validates
 ranges and pacing, decides the wind, re-simulates the shot with the same
@@ -25,7 +31,7 @@ from typing import Any, Callable, Literal
 from .game.physics import ShotSim, simulate_shot
 from .game.rules import DIFFICULTIES, POWER_RANGE, court_for, roll_wind, score_shot, throw_to_launch
 
-MatchMode = Literal["shootout", "race"]
+MatchMode = Literal["shootout", "race", "horse"]
 Msg = dict[str, Any]
 
 COUNTDOWN_S = 3.0
@@ -34,6 +40,11 @@ AWAY_TURN_S = 8.0  # shorter clock when the shooter is disconnected
 COOLDOWN_S = 0.8  # matches the client detector's cooldown
 SHOOTOUT_SHOTS = 5
 MAX_SUDDEN_DEATH_ROUNDS = 10
+HORSE = "HORSE"
+# Safety cap: a H-O-R-S-E game this long ends with the fewest letters winning.
+HORSE_MAX_SHOTS = 150
+TURN_MODES = ("shootout", "horse")
+ShotKind = Literal["swish", "bank", "bucket"]
 # The client's release timestamp is trusted if it's this close to server time.
 RELEASE_TOLERANCE_S = 0.5
 PATH_STRIDE = 2  # send every 2nd sample (60 Hz) to keep messages small
@@ -58,6 +69,7 @@ class PlayerStats:
     last_throw: float = -math.inf
     busy_until: float = -math.inf
     forfeited: bool = False
+    letters: int = 0  # H-O-R-S-E
 
     def public(self) -> dict[str, Any]:
         return {
@@ -68,6 +80,7 @@ class PlayerStats:
             "streak": self.streak,
             "wind": self.wind,
             "forfeited": self.forfeited,
+            "letters": self.letters,
         }
 
 
@@ -98,6 +111,11 @@ class MatchEngine:
         self.sd_makes_before: dict[str, int] = {}
         self.taken: dict[str, int] = {pid: 0 for pid in self.order}
         self.queue: list[str] = list(self.order) if self.mode == "shootout" else []
+        # H-O-R-S-E: who sets, and the shot to match (None while setting)
+        self.setter: str | None = self.order[0] if self.mode == "horse" else None
+        self.challenge: ShotKind | None = None
+        if self.mode == "horse":
+            self.queue = [self.order[0]]
         self.turn_available_at = self.start_at
         self.deadline = self.start_at + TURN_S
 
@@ -108,8 +126,13 @@ class MatchEngine:
         return [p for p in self.order if not self.stats[p].forfeited]
 
     @property
+    def alive(self) -> list[str]:
+        """Still in the game: not forfeited and (H-O-R-S-E) not spelled out."""
+        return [p for p in self.active if self.stats[p].letters < len(HORSE)]
+
+    @property
     def shooter(self) -> str | None:
-        return self.queue[0] if self.mode == "shootout" and self.queue and not self.finished else None
+        return self.queue[0] if self.mode in TURN_MODES and self.queue and not self.finished else None
 
     def scoreboard(self) -> Msg:
         return {"type": "scoreboard", "scores": {p: s.public() for p, s in self.stats.items()}}
@@ -121,9 +144,11 @@ class MatchEngine:
         return {
             "type": "turn",
             "playerId": pid,
-            "shotsLeft": None if self.sudden_death else SHOOTOUT_SHOTS - self.taken[pid],
+            "shotsLeft": None if self.sudden_death or self.mode == "horse" else SHOOTOUT_SHOTS - self.taken[pid],
             "round": self.round,
             "suddenDeath": self.sudden_death,
+            "setter": self.setter,
+            "challenge": self.challenge,
             "availableAt": self.turn_available_at,
             "deadline": self.deadline,
         }
@@ -167,7 +192,7 @@ class MatchEngine:
         if not (POWER_RANGE[0] <= power <= POWER_RANGE[1] and -90 <= angle <= 90 and 0 <= arc <= 1 and -90 <= aim <= 90):
             raise MatchError("invalid_throw", "Throw values out of range")
 
-        if self.mode == "shootout":
+        if self.mode in TURN_MODES:
             if pid != self.shooter:
                 raise MatchError("not_your_turn", "It's not your turn")
             if now < self.turn_available_at:
@@ -204,6 +229,8 @@ class MatchEngine:
         if self.mode == "shootout":
             self.taken[pid] += 1
             msgs += self._advance_turn(now, after=sim.duration)
+        elif self.mode == "horse":
+            msgs += self._horse_shot(pid, shot_kind(sim), now, after=sim.duration)
         msgs.append(self.scoreboard())
         if self.finished and self.result:
             msgs.append(self.result)
@@ -214,7 +241,7 @@ class MatchEngine:
         if self.finished:
             return []
         msgs: list[Msg] = []
-        if self.mode == "shootout":
+        if self.mode in TURN_MODES:
             pid = self.shooter
             if pid is not None and now >= self.turn_available_at:
                 limit = TURN_S if is_connected(pid) else AWAY_TURN_S
@@ -223,9 +250,12 @@ class MatchEngine:
                 st = self.stats[pid]
                 st.shots += 1
                 st.streak = 0
-                self.taken[pid] += 1
                 msgs.append({"type": "shot_result", "playerId": pid, "timeout": True, "scored": False, "points": 0})
-                msgs += self._advance_turn(now, after=0)
+                if self.mode == "horse":
+                    msgs += self._horse_shot(pid, None, now, after=0)
+                else:
+                    self.taken[pid] += 1
+                    msgs += self._advance_turn(now, after=0)
                 msgs.append(self.scoreboard())
         elif self.ends_at is not None:
             in_flight = max((s.busy_until for s in self.stats.values()), default=-math.inf)
@@ -245,6 +275,17 @@ class MatchEngine:
         self.sd_group = [p for p in self.sd_group if p != pid]
         if len(self.active) <= 1:
             self._finish("forfeit")
+        elif self.mode == "horse":
+            if len(self.alive) <= 1:
+                self._finish("complete")
+            elif pid == self.setter:
+                msgs += self._horse_next_setter(now, after_pid=pid)
+            elif not self.queue:
+                msgs += self._horse_set_again(now)
+            elif was_shooter:
+                self._open_turn(now)
+                if (t := self.turn_msg()) is not None:
+                    msgs.append(t)
         elif self.mode == "shootout":
             if not self.queue:
                 msgs += self._round_complete(now)
@@ -309,6 +350,70 @@ class MatchEngine:
         t = self.turn_msg()
         return [t] if t else []
 
+    # ── H-O-R-S-E turn flow ──
+
+    def _horse_shot(self, pid: str, kind: ShotKind | None, now: float, after: float) -> list[Msg]:
+        """`kind` is what the shot was (None = a miss or a timeout)."""
+        msgs: list[Msg] = []
+        if self.challenge is None:
+            # Setting: a make becomes the challenge for everyone else, in order after the setter.
+            if kind is None:
+                return self._horse_next_setter(now, after_pid=pid, after=after)
+            self.challenge = kind
+            i = self.order.index(pid)
+            others = self.order[i + 1 :] + self.order[:i]
+            self.queue = [p for p in others if p in self.alive]
+            msgs.append({"type": "challenge", "playerId": pid, "challenge": kind})
+        else:
+            # Matching: miss the match, get a letter.
+            matched = kind is not None and (self.challenge == "bucket" or kind == self.challenge)
+            if not matched:
+                st = self.stats[pid]
+                st.letters += 1
+                msgs.append({"type": "letter", "playerId": pid, "letters": st.letters, "word": HORSE[: st.letters], "out": st.letters >= len(HORSE)})
+            self.queue.pop(0)
+            if len(self.alive) <= 1:
+                self._finish("complete")
+                return msgs
+            if not self.queue:
+                return msgs + self._horse_set_again(now, after)
+        if self.shot_count >= HORSE_MAX_SHOTS:
+            self._finish("complete")
+            return msgs
+        self._open_turn(now, after)
+        if (t := self.turn_msg()) is not None:
+            msgs.append(t)
+        return msgs
+
+    def _horse_set_again(self, now: float, after: float = 0.0) -> list[Msg]:
+        """Everyone has tried the match: the setter sets again (or the next player, if the setter left)."""
+        self.challenge = None
+        if self.setter not in self.alive:
+            return self._horse_next_setter(now, after_pid=self.setter or self.order[0], after=after)
+        self.queue = [self.setter]
+        self.round += 1
+        return self._horse_open(now, after)
+
+    def _horse_next_setter(self, now: float, after_pid: str, after: float = 0.0) -> list[Msg]:
+        self.challenge = None
+        alive = self.alive
+        if len(alive) <= 1:
+            self._finish("complete")
+            return []
+        i = self.order.index(after_pid)
+        self.setter = next(p for p in self.order[i + 1 :] + self.order[: i + 1] if p in alive)
+        self.queue = [self.setter]
+        self.round += 1
+        return self._horse_open(now, after)
+
+    def _horse_open(self, now: float, after: float) -> list[Msg]:
+        if self.shot_count >= HORSE_MAX_SHOTS:
+            self._finish("complete")
+            return []
+        self._open_turn(now, after)
+        t = self.turn_msg()
+        return [t] if t else []
+
     # ── Results ──
 
     def _standings(self) -> list[dict[str, Any]]:
@@ -317,6 +422,8 @@ class MatchEngine:
             in_sd = pid in self.sd_group if self.sudden_death else True
             if self.mode == "shootout":
                 return (not s.forfeited, in_sd, s.makes, s.points)
+            if self.mode == "horse":
+                return (not s.forfeited, -s.letters, s.makes)
             return (not s.forfeited, s.points, s.makes)
 
         ranked = sorted(self.order, key=key, reverse=True)
@@ -365,3 +472,11 @@ class MatchEngine:
             "path": [list(p) for p in sim.path[::PATH_STRIDE]] + ([list(sim.path[-1])] if (len(sim.path) - 1) % PATH_STRIDE else []),
             "events": [{"t": e.t, "type": e.type, "x": e.x, "y": e.y, "z": e.z, "impact": e.impact} for e in sim.events],
         }
+
+
+def shot_kind(sim: ShotSim) -> ShotKind | None:
+    """What a H-O-R-S-E shot was: None for a miss."""
+    r = sim.result
+    if not r.scored:
+        return None
+    return "swish" if r.swish else "bank" if r.bank else "bucket"

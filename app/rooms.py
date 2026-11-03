@@ -42,7 +42,7 @@ Phase = Literal["lobby", "ready", "in_progress", "finished"]
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L: easy to read aloud
 CODE_LENGTH = 5
 BEST_OF = (1, 3, 5)
-MODES = ("shootout", "race")
+MODES = ("shootout", "race", "horse")
 # Quick match: strangers play a race (both shoot at once, nobody waits for a turn).
 QUICK_MODE = "race"
 QUICK_RACE_S = 60
@@ -502,7 +502,7 @@ class RoomManager:
     def _begin_match(self, room: Room) -> None:
         room.phase = "in_progress"
         room.auto_start = False
-        mode = room.mode if room.mode in ("shootout", "race") else "race"
+        mode = room.mode if room.mode in MODES else "race"
         room.match = MatchEngine(mode, room.difficulty, list(room.players), self.clock(), race_seconds=room.race_seconds)
 
     @staticmethod

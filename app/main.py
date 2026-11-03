@@ -38,7 +38,8 @@ def persistence_hooks(manager: RoomManager) -> None:
             return
         match_id = uuid.UUID(room.match_id)
         result = room.match.result if room.match else None
-        mode_key = None if not room.match else "shootout" if room.match.mode == "shootout" else f"race{room.race_seconds}"
+        # H-O-R-S-E is won on letters, not points, so it has no leaderboard.
+        mode_key = None if not room.match or room.match.mode == "horse" else "shootout" if room.match.mode == "shootout" else f"race{room.race_seconds}"
 
         def write() -> None:
             with Session(get_engine()) as s:

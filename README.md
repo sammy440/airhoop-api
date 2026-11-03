@@ -96,22 +96,28 @@ length without a new room; that un-readies everyone and resets the series.
 
 ## Matches (Week 7)
 
-Rooms are created with `{"mode": "shootout" | "race", "difficulty", "race_seconds": 30–300}`.
+Rooms are created with `{"mode": "shootout" | "race" | "horse", "difficulty", "race_seconds": 30–300}`.
 When the host sends `start`, the server runs the match (`app/match.py`):
 
-| | Shootout | Race |
-|---|---|---|
-| Who shoots | One player at a time, in join order | Everyone, freely |
-| Length | 5 shots each, then sudden death among tied leaders | `race_seconds` |
-| Winner | Most makes | Most points (shots released before the buzzer count) |
-| Clock | 20 s per turn (8 s if the shooter is disconnected); timeout = miss | — |
+| | Shootout | Race | H-O-R-S-E |
+|---|---|---|---|
+| Who shoots | One player at a time, in join order | Everyone, freely | The setter, then each other player in order after them |
+| Length | 5 shots each, then sudden death among tied leaders | `race_seconds` | Until one player is left (cap: 150 shots, then fewest letters wins) |
+| Winner | Most makes | Most points (shots released before the buzzer count) | Last player without H-O-R-S-E |
+| Clock | 20 s per turn (8 s if the shooter is disconnected); timeout = miss | — | As shootout |
+
+**H-O-R-S-E:** the setter's make becomes the challenge by its kind: `swish` (touched nothing), `bank` (off the
+board) or `bucket` (any other make). Every other player gets one try to match it: a swish needs a swish, a bank
+a bank, a bucket any make. A failed match is a letter; five is out. The setter keeps setting until they miss,
+then the next player sets. Points are still scored but don't decide anything, so H-O-R-S-E has no leaderboard.
 
 Extra messages:
 
 - Client → server: `throw{power, angle, arc, aim, t}` — the only per-shot data a client sends (`aim`: sideways throw angle in degrees, + = right; 0 if omitted).
-- Server → client: `match_start{mode, order, startAt, endsAt}`, `turn{playerId, shotsLeft, round, suddenDeath, availableAt, deadline}`,
+- Server → client: `match_start{mode, order, startAt, endsAt}`, `turn{playerId, shotsLeft, round, suddenDeath, setter, challenge, availableAt, deadline}`,
   `shot_result{playerId, scored, swish, points, multiplier, launch, wind, phase, path, events, duration}`,
-  `scoreboard{scores}`, `forfeit{playerId}`, `match_end{winner, winners, standings, reason}`. All carry `serverTime`.
+  `scoreboard{scores}` (incl. `letters`), `forfeit{playerId}`, `match_end{winner, winners, standings, reason}`,
+  and for H-O-R-S-E `challenge{playerId, challenge}` and `letter{playerId, letters, word, out}`. All carry `serverTime`.
 
 **Anti-cheat:** the server validates power/angle/arc ranges, enforces a 0.8 s cooldown and one ball in the air
 per player, enforces turn order, chooses the wind, trusts the client's release time only within 0.5 s of its
@@ -123,7 +129,7 @@ TypeScript code; regenerate with `GEN_PARITY=1 npx vitest run src/lib/game/parit
 `leave`, they forfeit. If one player remains they win by forfeit. Reconnecting mid-match replays a snapshot.
 
 Finished matches store `winner_id`, every throw (`throws`), and each player's points in `scores` under
-`shootout` / `race{seconds}` for the leaderboard.
+`shootout` / `race{seconds}` for the leaderboard (not H-O-R-S-E).
 
 ## Deploy
 

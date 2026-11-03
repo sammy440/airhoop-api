@@ -141,3 +141,28 @@ def test_host_can_abort(client, lobby):
         a.send_json({"type": "end"})
         end = receive_until(b, "match_end", limit=15)
         assert end["reason"] == "aborted" and end["winners"] == []
+
+
+def test_horse_over_websockets_skips_the_leaderboard(client, lobby, clock, engine):
+    room = lobby("horse")
+    with connect(client, room, "host") as a, connect(client, room, "guest") as b:
+        start_a, _ = start_match(a, b)
+        assert start_a["mode"] == "horse"
+        turn = receive_until(b, "turn")
+        assert turn["setter"] == room["host_id"] and turn["challenge"] is None
+
+        clock.advance(COUNTDOWN_S + 0.5)
+        a.send_json({"type": "throw", **MAKE, "t": clock.t})
+        assert receive_until(b, "challenge")["challenge"] == "swish"
+        assert receive_until(b, "turn")["playerId"] == room["guest_id"]
+
+        clock.advance(5)
+        b.send_json({"type": "throw", **MISS, "t": clock.t})
+        letter = receive_until(a, "letter")
+        assert letter["playerId"] == room["guest_id"] and letter["word"] == "H"
+
+        a.send_json({"type": "leave"})
+        receive_until(b, "match_end")
+
+    with Session(engine) as s:
+        assert s.exec(select(Score)).all() == []  # won on letters: no points leaderboard

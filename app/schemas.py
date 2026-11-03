@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 from app.game import daily
 
 Nickname = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=20, pattern=r"^[\w .\-]+$")]
-MatchMode = Literal["shootout", "race"]
+MatchMode = Literal["shootout", "race", "horse"]
 Difficulty = Literal["rookie", "starter", "allstar", "legend"]
 
 
