@@ -122,7 +122,7 @@ class QuickMatchOut(BaseModel):
     waited_s: float | None = None
 
 
-# Most points one make can earn: (2 + swish 1) × streak ×3 × difficulty.
+# Most points one make can earn: (2 + swish or bank 1) × streak ×3 × difficulty.
 MAX_MAKE_POINTS = {"rookie": 9, "starter": 9, "allstar": 13.5, "legend": 18}
 
 

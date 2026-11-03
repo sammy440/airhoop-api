@@ -86,6 +86,8 @@ def roll_wind(d: Difficulty, rng: random.Random | None = None) -> float:
 
 BASE_POINTS = 2
 SWISH_BONUS = 1
+# Banked in off the board. Never on top of a swish (a swish touches nothing), so a make still earns at most +1.
+BANK_BONUS = 1
 STREAK_TIERS = ((0, 1.0), (3, 1.5), (5, 2.0), (10, 3.0))
 
 
@@ -102,6 +104,6 @@ def score_shot(result: ShotResult, streak_before: int, difficulty_multiplier: fl
     if not result.scored:
         return 0, 1.0, 0
     multiplier = streak_multiplier(streak_before) * difficulty_multiplier
-    raw = (BASE_POINTS + (SWISH_BONUS if result.swish else 0)) * multiplier
+    raw = (BASE_POINTS + (SWISH_BONUS if result.swish else 0) + (BANK_BONUS if result.bank else 0)) * multiplier
     points = int(raw // 1 + (1 if raw % 1 >= 0.5 else 0))  # JS Math.round (half up)
     return points, multiplier, streak_before + 1
