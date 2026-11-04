@@ -41,6 +41,8 @@ class UserOut(BaseModel):
     avatar: Avatar | None = None
     # Linked to a Google account (the player can sign in on other devices).
     google: bool = False
+    xp: int = 0
+    level: int = 1
 
 
 class GuestOut(BaseModel):
@@ -166,6 +168,40 @@ class ScoreCreate(BaseModel):
             if self.shots > rules.seconds:
                 raise ValueError("too many shots for the clock")
         return self
+
+
+class XpGain(BaseModel):
+    """
+    Solo play since the last sync: what happened, not how much XP it's worth.
+    The server works the XP out (app/game/xp.py) and caps it per day.
+    """
+
+    shots: int = Field(0, ge=0, le=2000)
+    makes: int = Field(0, ge=0, le=2000)
+    swishes: int = Field(0, ge=0, le=2000)
+    banks: int = Field(0, ge=0, le=2000)
+    best_streak: int = Field(0, ge=0, le=2000)
+    runs: int = Field(0, ge=0, le=50)
+    # The daily challenge finished in this batch, e.g. "daily20261104" (earns its bonus once)
+    daily: Annotated[str, StringConstraints(pattern=r"^daily\d{8}$")] | None = None
+
+    @model_validator(mode="after")
+    def plausible(self) -> "XpGain":
+        if self.makes > self.shots:
+            raise ValueError("makes cannot exceed shots")
+        if self.swishes + self.banks > self.makes:
+            raise ValueError("swishes and banks are makes")
+        if self.best_streak > self.makes:
+            raise ValueError("streak longer than makes")
+        return self
+
+
+class XpOut(BaseModel):
+    xp: int
+    level: int
+    gained: int
+    # Hit today's solo limit: some of this batch didn't count
+    capped: bool = False
 
 
 class ScoreSaved(BaseModel):

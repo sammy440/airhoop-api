@@ -25,6 +25,11 @@ class User(SQLModel, table=True):
     # Google account ID ("sub") once linked. Only the ID is kept: no email, name or photo.
     google_sub: str | None = Field(default=None, max_length=255, unique=True, index=True)
     created_at: datetime = Field(default_factory=utcnow)
+    # Progress (app/game/xp.py). Solo XP is self-reported play stats, so it's capped per UTC day.
+    xp: int = Field(default=0)
+    xp_day: str | None = Field(default=None, max_length=8)  # YYYYMMDD the counter below belongs to
+    xp_today: int = Field(default=0)
+    last_daily: str | None = Field(default=None, max_length=16)  # last daily challenge that earned its bonus
 
 
 class AuthToken(SQLModel, table=True):

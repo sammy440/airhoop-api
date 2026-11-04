@@ -54,10 +54,29 @@ difficulty and clock exactly as the frontend's `daily.ts` does, so a daily run i
 difficulty, too many shots for that day's clock, or a date more than a day from today. Read a day's board with
 `GET /leaderboard?mode=daily20261030`. Multiplayer scores are fully server-refereed.
 
+## XP and levels
+
+`app/game/xp.py` (mirrored by the frontend's `src/lib/game/xp.ts`): 1 XP a shot, 10 a make, +5 a swish or bank,
++5 per make in your best streak beyond the second, 25 a finished timed/streak/daily run, 50 for the day's daily
+challenge (once), 20 a finished multiplayer game, 50 a win. Level 2 starts at 100 XP and each level needs 50 more
+than the last (max level 50).
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| POST | `/xp` | Bearer | Solo play since the last sync, as stats `{shots, makes, swishes, banks, best_streak, runs, daily?}` → `{xp, level, gained, capped}` · 30/min |
+
+The client never sends an XP number: the server works it out from the stats (sanity-checked like scores) and caps
+solo XP at 6,000 per UTC day. Multiplayer XP is awarded by the server at match end from the refereed stats and
+sent to each player as `xp{gained, xp, level}`. `/auth/me` includes `xp` and `level`; room players include `level`.
+
 ## WebSocket `/ws/{code}?token=…`
 
-Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `settings{mode?, difficulty?, raceSeconds?, bestOf?}` (host, lobby only) · `leave`
-Server → client: `room_state{room, you}` · `presence{event: joined|left|disconnected|reconnected, player}` · `pong{t}` · `error{code, message}`
+Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `settings{mode?, difficulty?, raceSeconds?, bestOf?}` (host, lobby only) · `react{reaction}` · `leave`
+Server → client: `room_state{room, you}` · `presence{event: joined|left|disconnected|reconnected, player}` · `reaction{playerId, reaction}` · `xp{gained, xp, level}` (yours, at match end) · `pong{t}` · `error{code, message}`
+
+Reactions are ids, never free text: `fire | clap | laugh | wow | flex | ball` (the client draws the emoji). Anyone
+in the room can send them in any phase; they go to everyone, the sender included. At most 4 per player per 3 s;
+extras are dropped quietly. An unknown id gets `error{code: "invalid_reaction"}`.
 
 Lifecycle: `lobby ⇄ ready → in_progress → finished → lobby`. Quick-match rooms (`quick: true`) are a 60 s race whose
 two seats start ready, so the first game starts by itself as soon as both players are connected; after that

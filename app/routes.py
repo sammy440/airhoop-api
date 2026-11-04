@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 
 from .auth import CurrentUser, GoogleTokenError, SessionDep, create_guest, issue_token, user_from_token
 from .db import get_engine
+from .game.xp import XpStats, level_for, xp_for
 from .models import AuthToken, Match, Score, Throw, User
 from .ratelimit import client_ip, rate_limit
 from .rooms import RoomError, RoomManager
@@ -32,6 +33,8 @@ from .schemas import (
     ScoreCreate,
     ScoreSaved,
     UserOut,
+    XpGain,
+    XpOut,
 )
 
 log = logging.getLogger("airhoops")
@@ -70,7 +73,7 @@ def ready(request: Request, response: Response) -> dict[str, object]:
 
 
 def user_out(user: User) -> UserOut:
-    return UserOut(id=user.id, nickname=user.nickname, avatar=user.avatar, google=user.google_sub is not None)
+    return UserOut(id=user.id, nickname=user.nickname, avatar=user.avatar, google=user.google_sub is not None, xp=user.xp, level=level_for(user.xp))
 
 
 @router.post("/auth/guest", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit("guest", 10, 60))])
@@ -130,6 +133,31 @@ def update_profile(body: ProfileUpdate, user: CurrentUser, session: SessionDep, 
     # Live rooms show the new name/look right away.
     anyio.from_thread.run(manager_of(request).update_player, str(user.id), user.nickname, user.avatar)
     return user_out(user)
+
+
+# Most solo XP a player can bank per UTC day: a long, great session is ~3,000.
+SOLO_XP_DAY_CAP = 6000
+
+
+@router.post("/xp", dependencies=[Depends(rate_limit("xp", 30, 60))])
+def gain_xp(body: XpGain, user: CurrentUser, session: SessionDep) -> XpOut:
+    """Solo play since the last sync (stats, not XP: the server works the XP out). Multiplayer XP is awarded at match end."""
+    now = datetime.now(UTC)
+    day = now.strftime("%Y%m%d")
+    # The daily bonus once per challenge, and only for today's or yesterday's (time zones, late syncs).
+    recent = {f"daily{day}", f"daily{(now - timedelta(days=1)).strftime('%Y%m%d')}"}
+    daily = body.daily if body.daily in recent and body.daily != user.last_daily else None
+    earned = xp_for(XpStats(body.shots, body.makes, body.swishes, body.banks, body.best_streak, body.runs, dailies=1 if daily else 0))
+    if user.xp_day != day:
+        user.xp_day, user.xp_today = day, 0
+    gained = max(0, min(earned, SOLO_XP_DAY_CAP - user.xp_today))
+    user.xp += gained
+    user.xp_today += gained
+    if daily:
+        user.last_daily = daily
+    session.add(user)
+    session.commit()
+    return XpOut(xp=user.xp, level=level_for(user.xp), gained=gained, capped=gained < earned)
 
 
 @router.delete("/auth/me", status_code=status.HTTP_204_NO_CONTENT)
@@ -274,14 +302,14 @@ async def room_socket(ws: WebSocket, code: str, token: str | None = None) -> Non
     code = code.upper()
     with Session(get_engine()) as session:
         user = user_from_token(session, token)
-        identity = (str(user.id), user.nickname, user.avatar) if user else None
+        identity = (str(user.id), user.nickname, user.avatar, level_for(user.xp)) if user else None
     if identity is None:
         await ws.send_json({"type": "error", "code": "unauthorized", "message": "Missing or invalid guest token"})
         await ws.close(code=4401)
         return
-    user_id, nickname, avatar = identity
+    user_id, nickname, avatar, level = identity
     try:
-        await manager.connect(code, user_id, nickname, ws, avatar=avatar)
+        await manager.connect(code, user_id, nickname, ws, avatar=avatar, level=level)
     except RoomError as e:
         await ws.send_json({"type": "error", "code": e.code, "message": e.message})
         await ws.close(code=4404 if e.status == 404 else 4409)

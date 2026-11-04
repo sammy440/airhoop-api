@@ -63,6 +63,7 @@ class PlayerStats:
     makes: int = 0
     shots: int = 0
     swishes: int = 0
+    banks: int = 0
     streak: int = 0
     best: int = 0
     wind: float = 0.0
@@ -77,7 +78,9 @@ class PlayerStats:
             "makes": self.makes,
             "shots": self.shots,
             "swishes": self.swishes,
+            "banks": self.banks,
             "streak": self.streak,
+            "best": self.best,
             "wind": self.wind,
             "forfeited": self.forfeited,
             "letters": self.letters,
@@ -101,8 +104,9 @@ class MatchEngine:
         self.stats = {pid: PlayerStats(wind=roll_wind(self.diff, self.rng)) for pid in self.order}
         self.finished = False
         self.result: Msg | None = None
-        # Set by the room once this game has counted towards its series.
+        # Set by the room once this game has counted towards its series, and once it's been saved.
         self.series_recorded = False
+        self.finish_recorded = False
         self.shot_count = 0
         # Shootout state
         self.round = 1
@@ -218,6 +222,7 @@ class MatchEngine:
         st.points += points
         st.makes += int(sim.result.scored)
         st.swishes += int(sim.result.swish)
+        st.banks += int(sim.result.bank)
         st.streak = streak
         st.best = max(st.best, streak)
         st.last_throw = now

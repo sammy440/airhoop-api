@@ -166,3 +166,25 @@ def test_horse_over_websockets_skips_the_leaderboard(client, lobby, clock, engin
 
     with Session(engine) as s:
         assert s.exec(select(Score)).all() == []  # won on letters: no points leaderboard
+
+
+def test_finished_match_awards_xp(client, lobby, clock, engine):
+    room = lobby("race")
+    with connect(client, room, "host") as a, connect(client, room, "guest") as b:
+        state = receive_until(a, "room_state")
+        assert all(p["level"] == 1 for p in state["room"]["players"])
+        start_match(a, b)
+        clock.advance(COUNTDOWN_S + 0.5)
+        a.send_json({"type": "throw", **MAKE, "t": clock.t})
+        receive_until(a, "shot_result")
+        clock.advance(31)
+        client.portal.call(client.app.state.rooms.tick_matches)
+        receive_until(a, "match_end")
+        # Winner: 1 shot + 1 make + 1 swish + the match + the win; the loser: just the match
+        assert receive_until(a, "xp", limit=15) == {"type": "xp", "gained": 1 + 10 + 5 + 20 + 50, "xp": 86, "level": 1}
+        assert receive_until(b, "xp", limit=15)["gained"] == 20
+
+    with Session(engine) as s:
+        from app.models import User
+
+        assert s.get(User, uuid.UUID(room["host_id"])).xp == 86

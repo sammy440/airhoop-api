@@ -14,7 +14,8 @@ from sqlmodel import Session
 from .auth import verify_google_credential
 from .config import Settings, get_settings
 from .db import get_engine
-from .models import Match, Score, Throw
+from .game.xp import XpStats, level_for, xp_for
+from .models import Match, Score, Throw, User
 from .ratelimit import RateLimiter
 from .rooms import Room, RoomManager
 from .routes import router
@@ -41,7 +42,9 @@ def persistence_hooks(manager: RoomManager) -> None:
         # H-O-R-S-E is won on letters, not points, so it has no leaderboard.
         mode_key = None if not room.match or room.match.mode == "horse" else "shootout" if room.match.mode == "shootout" else f"race{room.race_seconds}"
 
-        def write() -> None:
+        def write() -> dict[str, tuple[int, int]]:
+            """Returns each player's (XP gained, XP total)."""
+            awarded: dict[str, tuple[int, int]] = {}
             with Session(get_engine()) as s:
                 m = s.get(Match, match_id)
                 if m:
@@ -54,9 +57,28 @@ def persistence_hooks(manager: RoomManager) -> None:
                     for row in result["standings"]:
                         if not row["forfeited"]:
                             s.add(Score(user_id=uuid.UUID(row["playerId"]), mode=mode_key, difficulty=room.difficulty, score=row["points"]))
+                # XP from the refereed match: everyone who finished, a bonus for the winner(s).
+                if result and result["reason"] != "aborted":
+                    for row in result["standings"]:
+                        user = s.get(User, uuid.UUID(row["playerId"]))
+                        if row["forfeited"] or user is None:
+                            continue
+                        won = row["playerId"] in result["winners"]
+                        gained = xp_for(XpStats(row["shots"], row["makes"], row["swishes"], row.get("banks", 0), row.get("best", 0), matches=1, wins=int(won)))
+                        user.xp += gained
+                        s.add(user)
+                        awarded[row["playerId"]] = (gained, user.xp)
                 s.commit()
+            return awarded
 
-        await asyncio.to_thread(write)
+        awarded = await asyncio.to_thread(write)
+        for pid, (gained, total) in awarded.items():
+            player = room.players.get(pid)
+            if player is None:
+                continue
+            player.level = level_for(total)
+            if player.ws is not None:
+                await manager._send(player.ws, {"type": "xp", "gained": gained, "xp": total, "level": player.level})
 
     async def on_throw(room: Room, user_id: str, payload: dict, sim, points: int) -> None:
         if not room.match_id:

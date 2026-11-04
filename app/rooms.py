@@ -13,6 +13,9 @@ reaches the target; the rematch after that starts a fresh series. The host can
 change mode / difficulty / race length / series length in the lobby
 ("settings"), which un-readies everyone and resets the series.
 
+Reactions: anyone in the room can send one of a fixed set ("react"), broadcast to
+everyone as "reaction"; a few per player every few seconds, extras dropped.
+
 Presence:
   • A dropped socket keeps its seat for `reconnect_grace_s` (reloads, Wi-Fi blips).
   • A socket silent for `heartbeat_timeout_s` (no message, not even "ping") is closed.
@@ -47,6 +50,10 @@ MODES = ("shootout", "race", "horse")
 QUICK_MODE = "race"
 QUICK_RACE_S = 60
 QUICK_FALLBACK_DIFFICULTY = "starter"
+# Reactions are ids, never free text: the client maps them to emoji.
+REACTIONS = ("fire", "clap", "laugh", "wow", "flex", "ball")
+REACTION_BURST = 4  # at most this many …
+REACTION_WINDOW_S = 3.0  # … per player in this window; extras are dropped quietly
 
 # WebSocket close codes (4000-4999 are application-defined)
 CLOSE_HEARTBEAT = 4000
@@ -75,6 +82,9 @@ class Player:
     # Distinguishes a first "joined" from a "reconnected" presence event.
     ever_connected: bool = False
     avatar: dict[str, Any] | None = None
+    # Recent reaction times, for the rate limit
+    reacted_at: list[float] = field(default_factory=list)
+    level: int = 1
 
     @property
     def connected(self) -> bool:
@@ -138,6 +148,7 @@ class Room:
                     "ready": p.ready,
                     "connected": p.connected,
                     "host": p.id == self.host_id,
+                    "level": p.level,
                 }
                 for p in self.players.values()
             ],
@@ -301,10 +312,11 @@ class RoomManager:
 
     # ── WebSocket-side operations ──
 
-    async def connect(self, code: str, user_id: str, nickname: str, ws: WebSocket, avatar: dict[str, Any] | None = None) -> Room:
+    async def connect(self, code: str, user_id: str, nickname: str, ws: WebSocket, avatar: dict[str, Any] | None = None, level: int = 1) -> Room:
         async with self.lock:
             room = self.join(code, user_id, nickname, avatar)
             player = room.players[user_id]
+            player.level = level
             old = player.ws
             first_connect = not player.ever_connected
             was_away = player.ever_connected and old is None
@@ -367,6 +379,9 @@ class RoomManager:
         if kind == "throw":
             await self._throw(room, player, ws, msg)
             return True
+        if kind == "react":
+            await self._react(room, player, ws, msg)
+            return True
         try:
             async with self.lock:
                 changed = self._apply(room, player, kind, msg)
@@ -407,6 +422,18 @@ class RoomManager:
         if room.match.finished:
             await self._finish_match(room)
 
+    async def _react(self, room: Room, player: Player, ws: WebSocket, msg: dict[str, Any]) -> None:
+        reaction = msg.get("reaction")
+        if reaction not in REACTIONS:
+            await self._send(ws, {"type": "error", "code": "invalid_reaction", "message": "Unknown reaction"})
+            return
+        now = self.clock()
+        player.reacted_at = [t for t in player.reacted_at if now - t < REACTION_WINDOW_S]
+        if len(player.reacted_at) >= REACTION_BURST:
+            return  # spam: dropped without a fuss
+        player.reacted_at.append(now)
+        await self._match_out(room, [{"type": "reaction", "playerId": player.id, "reaction": reaction}])
+
     async def _forfeit(self, room: Room, user_id: str) -> None:
         if room.phase != "in_progress" or room.match is None:
             return
@@ -418,9 +445,17 @@ class RoomManager:
     async def _finish_match(self, room: Room) -> None:
         room.phase = "finished"
         self._record_series(room)
-        if self.on_finish:
-            await self.on_finish(room)
+        await self._on_finish_once(room)
         await self.broadcast_state(room)
+
+    async def _on_finish_once(self, room: Room) -> None:
+        """The finish hook (scores, XP) runs once per match, even when the buzzer and a last throw finish it together."""
+        m = room.match
+        if not self.on_finish or (m is not None and m.finish_recorded):
+            return
+        if m is not None:
+            m.finish_recorded = True
+        await self.on_finish(room)
 
     async def tick_matches(self) -> None:
         """Shot clocks and buzzers for every running match."""
@@ -602,8 +637,8 @@ class RoomManager:
     async def _run_hooks(self, room: Room, kind: Any) -> None:
         if kind == "start" and self.on_start:
             await self.on_start(room)
-        elif kind == "end" and self.on_finish:
-            await self.on_finish(room)
+        elif kind == "end":
+            await self._on_finish_once(room)
 
     # ── Messaging ──
 

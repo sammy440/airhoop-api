@@ -229,3 +229,33 @@ def test_profile_edit_pushes_room_state(client, room):
         state = receive_until(a, "room_state")
         me = players(state)["Captain"]
         assert me["avatar"]["jersey"] == "#13804f"
+
+
+def drain_reactions(ws):
+    """Reactions received until the pong for a ping sent now."""
+    ws.send_json({"type": "ping", "t": 1})
+    got = []
+    while (m := ws.receive_json())["type"] != "pong":
+        if m["type"] == "reaction":
+            got.append(m["reaction"])
+    return got
+
+
+def test_reactions_reach_everyone_and_are_rate_limited(client, room, clock):
+    with connect(client, room, "host") as a, connect(client, room, "guest") as b:
+        receive_until(b, "room_state")
+        b.send_json({"type": "react", "reaction": "fire"})
+        got = receive_until(a, "reaction")
+        assert got["playerId"] == room["guest_id"] and got["reaction"] == "fire"
+        assert receive_until(b, "reaction")["reaction"] == "fire"  # the sender sees it too
+
+        b.send_json({"type": "react", "reaction": "<script>"})
+        assert receive_until(b, "error")["code"] == "invalid_reaction"
+
+        for _ in range(6):
+            b.send_json({"type": "react", "reaction": "clap"})
+        assert drain_reactions(b) == ["clap"] * 3  # 4 per window, one already used
+
+        clock.advance(3.1)
+        b.send_json({"type": "react", "reaction": "wow"})
+        assert drain_reactions(b) == ["wow"]
