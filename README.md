@@ -143,8 +143,8 @@ Extra messages:
   and for H-O-R-S-E `challenge{playerId, challenge}` and `letter{playerId, letters, word, out}`. All carry `serverTime`.
 
 **The green rim** (`app/game/green.py`, mirrored by the frontend's `green.ts`): a light loops round the rim every
-3 s on the match clock, and the rim is green while it passes the front: 0.7 s a loop on Rookie, 0.55 Starter,
-0.42 All-Star, 0.3 Legend (`Difficulty.green_window`). A throw with `camera: true` released while it's green is
+3 s on the match clock, and the rim is green while it passes the front: 1.2 s a loop on Rookie, 1.0 Starter,
+0.8 All-Star, 0.6 Legend (`Difficulty.green_window`). A throw with `camera: true` released while it's green is
 replaced by `green_launch`: a fixed, ordered search for a launch that swishes in that wind with the hoop where it
 will be. `shot_result` carries `green`. The parity fixtures pin `is_green` and `green_launch` to the browser's.
 

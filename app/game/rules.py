@@ -65,10 +65,10 @@ class Difficulty:
 
 
 DIFFICULTIES: dict[str, Difficulty] = {
-    "rookie": Difficulty("rookie", 3.6, 0.27, None, 0, 1, 0.7),
-    "starter": Difficulty("starter", 4.6, 0.2286, None, 0, 1, 0.55),
-    "allstar": Difficulty("allstar", 5.8, 0.2286, HoopMotion(0.45, 0.22), 0.6, 1.5, 0.42),
-    "legend": Difficulty("legend", 6.75, 0.2286, HoopMotion(0.7, 0.3), 1.2, 2, 0.3),
+    "rookie": Difficulty("rookie", 3.6, 0.27, None, 0, 1, 1.2),
+    "starter": Difficulty("starter", 4.6, 0.2286, None, 0, 1, 1.0),
+    "allstar": Difficulty("allstar", 5.8, 0.2286, HoopMotion(0.45, 0.22), 0.6, 1.5, 0.8),
+    "legend": Difficulty("legend", 6.75, 0.2286, HoopMotion(0.7, 0.3), 1.2, 2, 0.6),
 }
 
 
