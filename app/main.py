@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from typing import Any
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -14,6 +15,7 @@ from sqlmodel import Session
 from .auth import verify_google_credential
 from .config import Settings, get_settings
 from .db import get_engine
+from .game.cosmetics import usable_loadout
 from .game.xp import XpStats, level_for, xp_for
 from .models import Match, Score, Throw, User
 from .ratelimit import RateLimiter
@@ -42,9 +44,9 @@ def persistence_hooks(manager: RoomManager) -> None:
         # H-O-R-S-E is won on letters, not points, so it has no leaderboard.
         mode_key = None if not room.match or room.match.mode == "horse" else "shootout" if room.match.mode == "shootout" else f"race{room.race_seconds}"
 
-        def write() -> dict[str, tuple[int, int]]:
-            """Returns each player's (XP gained, XP total)."""
-            awarded: dict[str, tuple[int, int]] = {}
+        def write() -> dict[str, tuple[int, int, Any]]:
+            """Returns each player's (XP gained, XP total, chosen loadout)."""
+            awarded: dict[str, tuple[int, int, Any]] = {}
             with Session(get_engine()) as s:
                 m = s.get(Match, match_id)
                 if m:
@@ -67,16 +69,17 @@ def persistence_hooks(manager: RoomManager) -> None:
                         gained = xp_for(XpStats(row["shots"], row["makes"], row["swishes"], row.get("banks", 0), row.get("best", 0), matches=1, wins=int(won)))
                         user.xp += gained
                         s.add(user)
-                        awarded[row["playerId"]] = (gained, user.xp)
+                        awarded[row["playerId"]] = (gained, user.xp, user.loadout)
                 s.commit()
             return awarded
 
         awarded = await asyncio.to_thread(write)
-        for pid, (gained, total) in awarded.items():
+        for pid, (gained, total, loadout) in awarded.items():
             player = room.players.get(pid)
             if player is None:
                 continue
             player.level = level_for(total)
+            player.loadout = usable_loadout(loadout, player.level)  # a level-up may have unlocked their pick
             if player.ws is not None:
                 await manager._send(player.ws, {"type": "xp", "gained": gained, "xp": total, "level": player.level})
 

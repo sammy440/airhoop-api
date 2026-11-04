@@ -30,6 +30,8 @@ class User(SQLModel, table=True):
     xp_day: str | None = Field(default=None, max_length=8)  # YYYYMMDD the counter below belongs to
     xp_today: int = Field(default=0)
     last_daily: str | None = Field(default=None, max_length=16)  # last daily challenge that earned its bonus
+    # Chosen ball skin and trail ({"ball", "trail"}); shown to others only if unlocked (app/game/cosmetics.py).
+    loadout: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
 
 class AuthToken(SQLModel, table=True):

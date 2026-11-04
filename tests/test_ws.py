@@ -259,3 +259,14 @@ def test_reactions_reach_everyone_and_are_rate_limited(client, room, clock):
         clock.advance(3.1)
         b.send_json({"type": "react", "reaction": "wow"})
         assert drain_reactions(b) == ["wow"]
+
+
+def test_room_players_carry_their_unlocked_loadout(client, room):
+    client.post("/xp", json={"shots": 30, "makes": 30}, headers=auth(room["host"]))  # 330 XP: level 3
+    client.patch("/auth/me", json={"loadout": {"ball": "retro", "trail": "rainbow"}}, headers=auth(room["host"]))
+    with connect(client, room, "guest") as b, connect(client, room, "host"):
+        receive_until(b, "presence")
+        host = players(receive_until(b, "room_state"))["Host"]
+        assert host["loadout"] == {"ball": "retro", "trail": "flame"} and host["level"] == 3  # rainbow needs level 18
+        client.patch("/auth/me", json={"loadout": {"ball": "classic", "trail": "flame"}}, headers=auth(room["host"]))
+        assert players(receive_until(b, "room_state"))["Host"]["loadout"] == {"ball": "classic", "trail": "flame"}

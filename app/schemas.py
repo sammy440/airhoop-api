@@ -43,6 +43,7 @@ class UserOut(BaseModel):
     google: bool = False
     xp: int = 0
     level: int = 1
+    loadout: dict[str, str] | None = None
 
 
 class GuestOut(BaseModel):
@@ -67,9 +68,17 @@ class GoogleOut(BaseModel):
     account: Literal["new", "linked", "existing"]
 
 
+class Loadout(BaseModel):
+    """Ball skin and trail ids (unknown or locked ones are shown as the default)."""
+
+    ball: Annotated[str, StringConstraints(max_length=16)] = "classic"
+    trail: Annotated[str, StringConstraints(max_length=16)] = "flame"
+
+
 class ProfileUpdate(BaseModel):
     nickname: Nickname | None = None
     avatar: Avatar | None = None
+    loadout: Loadout | None = None
 
 
 class RoomCreate(BaseModel):

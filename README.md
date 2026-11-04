@@ -69,6 +69,10 @@ The client never sends an XP number: the server works it out from the stats (san
 solo XP at 6,000 per UTC day. Multiplayer XP is awarded by the server at match end from the refereed stats and
 sent to each player as `xp{gained, xp, level}`. `/auth/me` includes `xp` and `level`; room players include `level`.
 
+Ball skin and trail: `PATCH /auth/me {loadout: {ball, trail}}` stores the player's pick; `/auth/me` and room players
+carry `loadout` as others may see it, i.e. only what's unlocked at their level (`app/game/cosmetics.py`, the same
+table as the frontend's `cosmetics.ts`); anything locked or unknown shows as the default.
+
 ## WebSocket `/ws/{code}?token=…`
 
 Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `settings{mode?, difficulty?, raceSeconds?, bestOf?}` (host, lobby only) · `react{reaction}` · `leave`

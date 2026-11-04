@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 
 from .auth import CurrentUser, GoogleTokenError, SessionDep, create_guest, issue_token, user_from_token
 from .db import get_engine
+from .game.cosmetics import usable_loadout
 from .game.xp import XpStats, level_for, xp_for
 from .models import AuthToken, Match, Score, Throw, User
 from .ratelimit import client_ip, rate_limit
@@ -73,7 +74,16 @@ def ready(request: Request, response: Response) -> dict[str, object]:
 
 
 def user_out(user: User) -> UserOut:
-    return UserOut(id=user.id, nickname=user.nickname, avatar=user.avatar, google=user.google_sub is not None, xp=user.xp, level=level_for(user.xp))
+    level = level_for(user.xp)
+    return UserOut(
+        id=user.id,
+        nickname=user.nickname,
+        avatar=user.avatar,
+        google=user.google_sub is not None,
+        xp=user.xp,
+        level=level,
+        loadout=usable_loadout(user.loadout, level),
+    )
 
 
 @router.post("/auth/guest", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit("guest", 10, 60))])
@@ -128,10 +138,13 @@ def update_profile(body: ProfileUpdate, user: CurrentUser, session: SessionDep, 
         user.nickname = body.nickname
     if body.avatar is not None:
         user.avatar = body.avatar.model_dump()
+    if body.loadout is not None:
+        user.loadout = body.loadout.model_dump()
     session.add(user)
     session.commit()
-    # Live rooms show the new name/look right away.
-    anyio.from_thread.run(manager_of(request).update_player, str(user.id), user.nickname, user.avatar)
+    # Live rooms show the new name/look/ball right away.
+    loadout = usable_loadout(user.loadout, level_for(user.xp))
+    anyio.from_thread.run(manager_of(request).update_player, str(user.id), user.nickname, user.avatar, loadout)
     return user_out(user)
 
 
@@ -302,14 +315,14 @@ async def room_socket(ws: WebSocket, code: str, token: str | None = None) -> Non
     code = code.upper()
     with Session(get_engine()) as session:
         user = user_from_token(session, token)
-        identity = (str(user.id), user.nickname, user.avatar, level_for(user.xp)) if user else None
+        identity = (str(user.id), user.nickname, user.avatar, level_for(user.xp), user.loadout) if user else None
     if identity is None:
         await ws.send_json({"type": "error", "code": "unauthorized", "message": "Missing or invalid guest token"})
         await ws.close(code=4401)
         return
-    user_id, nickname, avatar, level = identity
+    user_id, nickname, avatar, level, loadout = identity
     try:
-        await manager.connect(code, user_id, nickname, ws, avatar=avatar, level=level)
+        await manager.connect(code, user_id, nickname, ws, avatar=avatar, level=level, loadout=usable_loadout(loadout, level))
     except RoomError as e:
         await ws.send_json({"type": "error", "code": e.code, "message": e.message})
         await ws.close(code=4404 if e.status == 404 else 4409)

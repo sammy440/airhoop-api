@@ -85,6 +85,7 @@ class Player:
     # Recent reaction times, for the rate limit
     reacted_at: list[float] = field(default_factory=list)
     level: int = 1
+    loadout: dict[str, str] | None = None
 
     @property
     def connected(self) -> bool:
@@ -149,6 +150,7 @@ class Room:
                     "connected": p.connected,
                     "host": p.id == self.host_id,
                     "level": p.level,
+                    "loadout": p.loadout,
                 }
                 for p in self.players.values()
             ],
@@ -302,21 +304,33 @@ class RoomManager:
         self._recompute_phase(room)
         return room
 
-    async def update_player(self, user_id: str, nickname: str, avatar: dict[str, Any] | None) -> None:
+    async def update_player(self, user_id: str, nickname: str, avatar: dict[str, Any] | None, loadout: dict[str, str] | None = None) -> None:
         """Profile edits show up right away in any room the player is in."""
         for room in list(self.rooms.values()):
             if (p := room.players.get(user_id)) is not None:
                 p.nickname = nickname
                 p.avatar = avatar
+                if loadout is not None:
+                    p.loadout = loadout
                 await self.broadcast_state(room)
 
     # ── WebSocket-side operations ──
 
-    async def connect(self, code: str, user_id: str, nickname: str, ws: WebSocket, avatar: dict[str, Any] | None = None, level: int = 1) -> Room:
+    async def connect(
+        self,
+        code: str,
+        user_id: str,
+        nickname: str,
+        ws: WebSocket,
+        avatar: dict[str, Any] | None = None,
+        level: int = 1,
+        loadout: dict[str, str] | None = None,
+    ) -> Room:
         async with self.lock:
             room = self.join(code, user_id, nickname, avatar)
             player = room.players[user_id]
             player.level = level
+            player.loadout = loadout
             old = player.ws
             first_connect = not player.ever_connected
             was_away = player.ever_connected and old is None

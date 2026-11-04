@@ -57,3 +57,19 @@ def test_solo_xp_is_capped_per_day(client, engine):
         s.commit()
     r = client.post("/xp", json={"shots": 10, "makes": 10}, headers=auth(token)).json()
     assert r["gained"] == 30 and r["capped"] is True
+
+
+def test_loadout_is_shown_only_when_unlocked(client, engine):
+    from app.game.cosmetics import BALL_LEVELS, TRAIL_LEVELS, usable_loadout
+
+    # Same table as the frontend's cosmetics.ts
+    assert BALL_LEVELS == {"classic": 1, "retro": 3, "gold": 6, "ice": 10, "lava": 15, "galaxy": 22}
+    assert TRAIL_LEVELS == {"flame": 1, "blue": 4, "toxic": 8, "royal": 12, "rainbow": 18}
+    assert usable_loadout({"ball": "gold", "trail": "blue"}, 5) == {"ball": "classic", "trail": "blue"}
+    assert usable_loadout({"ball": "<script>", "trail": None}, 50) == {"ball": "classic", "trail": "flame"}
+
+    token, _ = make_guest(client, "Skins")
+    me = client.patch("/auth/me", json={"loadout": {"ball": "gold", "trail": "flame"}}, headers=auth(token)).json()
+    assert me["loadout"] == {"ball": "classic", "trail": "flame"}  # level 1: gold is locked
+    client.post("/xp", json={"shots": 100, "makes": 100}, headers=auth(token))  # 1,100 XP: level 6
+    assert client.get("/auth/me", headers=auth(token)).json()["loadout"] == {"ball": "gold", "trail": "flame"}
