@@ -16,7 +16,7 @@ Modes
             keeps setting until they miss, then the next player sets. Last one
             standing wins.
 
-Trust model: clients send only {power, angle, arc, aim, t}. The server validates
+Trust model: clients send only {power, angle, arc, aim, t, camera}. The server validates
 ranges and pacing, decides the wind, re-simulates the shot with the same
 deterministic physics the browser uses, and broadcasts the result.
 """
@@ -28,6 +28,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+from .game.green import green_launch, is_green
 from .game.physics import ShotSim, simulate_shot
 from .game.rules import DIFFICULTIES, POWER_RANGE, court_for, roll_wind, score_shot, throw_to_launch
 
@@ -215,6 +216,11 @@ class MatchEngine:
         launch = throw_to_launch(power, angle, arc, aim)
         wind = st.wind
         phase = release - self.start_at
+        # The green rim: a camera throw released while it's green swishes, however it was thrown.
+        # ("camera" is the client's word, like the throw itself; keyboard and touch don't get it.)
+        green = payload.get("camera") is True and is_green(phase, self.diff.green_window)
+        if green:
+            launch = green_launch(self.court, wind=wind, phase=phase) or launch
         sim = simulate_shot(launch, self.court, wind=wind, phase=phase)
         points, multiplier, streak = score_shot(sim.result, st.streak, self.diff.score_multiplier)
 
@@ -230,7 +236,7 @@ class MatchEngine:
         st.wind = roll_wind(self.diff, self.rng)
         self.shot_count += 1
 
-        msgs: list[Msg] = [self._shot_msg(pid, sim, points, multiplier, wind, phase, release)]
+        msgs: list[Msg] = [{**self._shot_msg(pid, sim, points, multiplier, wind, phase, release), "green": green}]
         if self.mode == "shootout":
             self.taken[pid] += 1
             msgs += self._advance_turn(now, after=sim.duration)

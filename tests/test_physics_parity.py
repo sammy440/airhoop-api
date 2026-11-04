@@ -43,3 +43,22 @@ def test_same_shot_as_the_browser(case):
     for (t, x, y, z), (et, ex, ey, ez) in zip(sim.path[::15], case["path"], strict=True):
         assert (t, x, y, z) == pytest.approx((et, ex, ey, ez), abs=2e-4)
     assert [score_shot(sim.result, streak, d.score_multiplier)[0] for streak in (0, 4, 11)] == case["points"]
+
+
+GREEN = json.loads((Path(__file__).parent / "fixtures" / "physics_parity.json").read_text())["green"]
+
+
+def test_green_rim_matches_the_browser():
+    from app.game.green import green_launch, is_green
+
+    assert len(GREEN) == 144
+    for case in GREEN:
+        i = case["input"]
+        d = DIFFICULTIES[i["difficulty"]]
+        assert is_green(i["phase"], d.green_window) == case["green"], i
+        launch = green_launch(court_for(d), wind=i["wind"], phase=i["phase"])
+        assert launch is not None and case["launch"] is not None, i
+        assert launch.speed == pytest.approx(case["launch"]["speed"], abs=1e-9), i
+        assert launch.aim == pytest.approx(case["launch"]["aim"], abs=1e-9), i
+        assert launch.angle == case["launch"]["angle"]
+        assert case["swish"] is True, i

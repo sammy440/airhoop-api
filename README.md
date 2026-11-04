@@ -136,11 +136,17 @@ then the next player sets. Points are still scored but don't decide anything, so
 
 Extra messages:
 
-- Client → server: `throw{power, angle, arc, aim, t}` — the only per-shot data a client sends (`aim`: sideways throw angle in degrees, + = right; 0 if omitted).
+- Client → server: `throw{power, angle, arc, aim, t, camera?}` — the only per-shot data a client sends (`aim`: sideways throw angle in degrees, + = right; 0 if omitted; `camera`: thrown on camera, see the green rim below).
 - Server → client: `match_start{mode, order, startAt, endsAt}`, `turn{playerId, shotsLeft, round, suddenDeath, setter, challenge, availableAt, deadline}`,
   `shot_result{playerId, scored, swish, points, multiplier, launch, wind, phase, path, events, duration}`,
   `scoreboard{scores}` (incl. `letters`), `forfeit{playerId}`, `match_end{winner, winners, standings, reason}`,
   and for H-O-R-S-E `challenge{playerId, challenge}` and `letter{playerId, letters, word, out}`. All carry `serverTime`.
+
+**The green rim** (`app/game/green.py`, mirrored by the frontend's `green.ts`): a light loops round the rim every
+3 s on the match clock, and the rim is green while it passes the front: 0.7 s a loop on Rookie, 0.55 Starter,
+0.42 All-Star, 0.3 Legend (`Difficulty.green_window`). A throw with `camera: true` released while it's green is
+replaced by `green_launch`: a fixed, ordered search for a launch that swishes in that wind with the hoop where it
+will be. `shot_result` carries `green`. The parity fixtures pin `is_green` and `green_launch` to the browser's.
 
 **Anti-cheat:** the server validates power/angle/arc ranges, enforces a 0.8 s cooldown and one ball in the air
 per player, enforces turn order, chooses the wind, trusts the client's release time only within 0.5 s of its

@@ -259,3 +259,14 @@ def simulate_shot(launch: Launch, court: Court = DEFAULT_COURT, wind: float = 0.
         result=ShotResult(scored, scored and not touched_rim and not touched_board, scored and touched_board, miss, error, lateral),
         duration=t,
     )
+
+
+def ideal_speed(angle: float, court: Court = DEFAULT_COURT) -> float | None:
+    """Closed-form speed that drops the ball through the rim centre at `angle` (no wind, still hoop); None if it can't reach."""
+    th = angle * math.pi / 180
+    x = court.hoop_distance
+    dy = court.rim_height - court.release_height
+    denom = 2 * math.cos(th) ** 2 * (x * math.tan(th) - dy)
+    if denom <= 0:
+        return None
+    return math.sqrt(court.gravity * x * x / denom)

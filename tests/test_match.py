@@ -243,3 +243,20 @@ def test_aim_steers_the_shot_and_is_validated():
         assert e.value.code == "invalid_throw"
     # Older clients send no aim: straight.
     assert m.throw("b", MAKE, START + 1)[0][0]["launch"]["aim"] == 0
+
+
+def test_camera_throw_on_the_green_rim_swishes():
+    from app.game.green import GREEN_CYCLE_S
+
+    m = race()
+    green_t = START + GREEN_CYCLE_S / 2  # the front of the loop: green
+    shot = m.throw("a", {**MISS, "camera": True, "t": green_t}, green_t)[0][0]
+    assert shot["green"] is True and shot["scored"] and shot["swish"] and shot["points"] == 3
+    # Not green (a few loops on, once that ball has landed): thrown as thrown
+    off_t = START + 3 * GREEN_CYCLE_S + 0.3
+    shot = m.throw("a", {**MISS, "camera": True, "t": off_t}, off_t)[0][0]
+    assert shot["green"] is False and not shot["scored"]
+    # Green but not a camera throw: no help
+    later = START + GREEN_CYCLE_S + GREEN_CYCLE_S / 2
+    shot = m.throw("b", {**MISS, "t": later}, later)[0][0]
+    assert shot["green"] is False and not shot["scored"]
