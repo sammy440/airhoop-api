@@ -75,8 +75,14 @@ table as the frontend's `cosmetics.ts`); anything locked or unknown shows as the
 
 ## WebSocket `/ws/{code}?token=…`
 
-Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `settings{mode?, difficulty?, raceSeconds?, bestOf?}` (host, lobby only) · `react{reaction}` · `leave`
+Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `settings{mode?, difficulty?, raceSeconds?, bestOf?}` (host, lobby only) · `react{reaction}` · `chat{text | quick}` · `leave`
 Server → client: `room_state{room, you}` · `presence{event: joined|left|disconnected|reconnected, player}` · `reaction{playerId, reaction}` · `xp{gained, xp, level}` (yours, at match end) · `pong{t}` · `error{code, message}`
+
+Chat: `chat{text}` or `chat{quick}` → `chat{playerId, text | quick}` to everyone in the room (`app/chat.py`). **Never
+stored**: relayed and forgotten (no table, no log line, no history kept for reconnects). Rooms joined by code allow
+free text (cleaned: control characters out, links → [link], emails → [hidden], profanity masked, 200 characters);
+quick-match rooms allow only the quick-chat ids `gg | nice_shot | rematch | one_more | good_luck | unlucky | wow |
+thanks` (`error{code: "quick_chat_only"}` otherwise). 5 messages per player per 10 s (`chat_too_fast`).
 
 Reactions are ids, never free text: `fire | clap | laugh | wow | flex | ball` (the client draws the emoji). Anyone
 in the room can send them in any phase; they go to everyone, the sender included. At most 4 per player per 3 s;

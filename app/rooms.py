@@ -16,6 +16,9 @@ change mode / difficulty / race length / series length in the lobby
 Reactions: anyone in the room can send one of a fixed set ("react"), broadcast to
 everyone as "reaction"; a few per player every few seconds, extras dropped.
 
+Chat ("chat" → "chat", see chat.py): free text in rooms joined by code, quick chat only in
+quick-match rooms. Never stored: relayed and forgotten, not logged, not kept for reconnects.
+
 Presence:
   • A dropped socket keeps its seat for `reconnect_grace_s` (reloads, Wi-Fi blips).
   • A socket silent for `heartbeat_timeout_s` (no message, not even "ping") is closed.
@@ -36,6 +39,7 @@ from typing import Any, Literal
 
 from fastapi import WebSocket
 
+from .chat import CHAT_BURST, CHAT_WINDOW_S, QUICK_CHAT, clean_text
 from .config import Settings
 from .game.physics import ShotSim
 from .game.rules import DIFFICULTIES
@@ -82,8 +86,9 @@ class Player:
     # Distinguishes a first "joined" from a "reconnected" presence event.
     ever_connected: bool = False
     avatar: dict[str, Any] | None = None
-    # Recent reaction times, for the rate limit
+    # Recent reaction and chat times, for the rate limits (times only, never what was said)
     reacted_at: list[float] = field(default_factory=list)
+    chatted_at: list[float] = field(default_factory=list)
     level: int = 1
     loadout: dict[str, str] | None = None
 
@@ -396,6 +401,9 @@ class RoomManager:
         if kind == "react":
             await self._react(room, player, ws, msg)
             return True
+        if kind == "chat":
+            await self._chat(room, player, ws, msg)
+            return True
         try:
             async with self.lock:
                 changed = self._apply(room, player, kind, msg)
@@ -447,6 +455,34 @@ class RoomManager:
             return  # spam: dropped without a fuss
         player.reacted_at.append(now)
         await self._match_out(room, [{"type": "reaction", "playerId": player.id, "reaction": reaction}])
+
+    async def _chat(self, room: Room, player: Player, ws: WebSocket, msg: dict[str, Any]) -> None:
+        """Checks a message and passes it to everyone in the room. Nothing is kept: not the text, not a history."""
+        if room.quick:
+            # Strangers: quick chat only
+            quick = msg.get("quick")
+            if quick not in QUICK_CHAT:
+                await self._send(ws, {"type": "error", "code": "quick_chat_only", "message": "Quick match has quick chat only"})
+                return
+            out: dict[str, Any] = {"type": "chat", "playerId": player.id, "quick": quick}
+        elif "quick" in msg:
+            if msg["quick"] not in QUICK_CHAT:
+                await self._send(ws, {"type": "error", "code": "invalid_chat", "message": "Unknown quick chat"})
+                return
+            out = {"type": "chat", "playerId": player.id, "quick": msg["quick"]}
+        else:
+            text = clean_text(msg.get("text"))
+            if text is None:
+                await self._send(ws, {"type": "error", "code": "invalid_chat", "message": "Type a message first"})
+                return
+            out = {"type": "chat", "playerId": player.id, "text": text}
+        now = self.clock()
+        player.chatted_at = [t for t in player.chatted_at if now - t < CHAT_WINDOW_S]
+        if len(player.chatted_at) >= CHAT_BURST:
+            await self._send(ws, {"type": "error", "code": "chat_too_fast", "message": "Slow down a little"})
+            return
+        player.chatted_at.append(now)
+        await self._match_out(room, [out])
 
     async def _forfeit(self, room: Room, user_id: str) -> None:
         if room.phase != "in_progress" or room.match is None:
