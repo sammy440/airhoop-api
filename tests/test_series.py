@@ -81,7 +81,7 @@ def test_host_changes_the_game_in_the_lobby(client, lobby):
         assert (state["mode"], state["difficulty"], state["series"]["best_of"]) == ("shootout", "legend", 5)
         assert not any(p["ready"] for p in state["players"])  # everyone confirms the new game
 
-        for bad in ({"mode": "golf"}, {"bestOf": 2}, {"raceSeconds": 5}, {"difficulty": "nope"}):
+        for bad in ({"mode": "golf"}, {"bestOf": 2}, {"raceSeconds": 5}, {"raceSeconds": 61}, {"raceSeconds": 1860}, {"raceSeconds": True}, {"difficulty": "nope"}):
             a.send_json({"type": "settings", **bad})
             assert receive_until(a, "error")["code"] == "invalid_settings"
 

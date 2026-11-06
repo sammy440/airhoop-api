@@ -36,6 +36,18 @@ MatchMode = Literal["shootout", "race", "horse"]
 Msg = dict[str, Any]
 
 COUNTDOWN_S = 3.0
+# Race lengths: the presets, or whole minutes up to 30 (the same set as the solo shot clock,
+# frontend lib/game/modes.ts), so each length has one leaderboard rather than one per second.
+RACE_PRESETS = (30, 60, 90, 120)
+RACE_MAX_MINUTES = 30
+
+
+def valid_race_seconds(s: object) -> bool:
+    if isinstance(s, bool) or not isinstance(s, int):
+        return False
+    return s in RACE_PRESETS or (s % 60 == 0 and 60 <= s <= RACE_MAX_MINUTES * 60)
+
+
 TURN_S = 20.0  # time to take your shootout shot
 AWAY_TURN_S = 8.0  # shorter clock when the shooter is disconnected
 COOLDOWN_S = 0.8  # matches the client detector's cooldown

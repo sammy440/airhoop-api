@@ -43,7 +43,7 @@ from .chat import CHAT_BURST, CHAT_WINDOW_S, QUICK_CHAT, clean_text
 from .config import Settings
 from .game.physics import ShotSim
 from .game.rules import DIFFICULTIES
-from .match import MatchEngine, MatchError
+from .match import MatchEngine, MatchError, valid_race_seconds
 
 Phase = Literal["lobby", "ready", "in_progress", "finished"]
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L: easy to read aloud
@@ -600,8 +600,8 @@ class RoomManager:
             raise RoomError("invalid_settings", "Unknown mode")
         if difficulty not in DIFFICULTIES:
             raise RoomError("invalid_settings", "Unknown difficulty")
-        if isinstance(race_seconds, bool) or not isinstance(race_seconds, int) or not 30 <= race_seconds <= 300:
-            raise RoomError("invalid_settings", "Race length must be 30–300 seconds")
+        if not valid_race_seconds(race_seconds):
+            raise RoomError("invalid_settings", "Race length must be 30 s, 90 s or whole minutes up to 30")
         if best_of not in BEST_OF or isinstance(best_of, bool):
             raise RoomError("invalid_settings", "Series must be best of 1, 3 or 5")
         changed = (mode, difficulty, race_seconds, best_of) != (room.mode, room.difficulty, room.race_seconds, room.best_of)

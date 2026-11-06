@@ -2,9 +2,10 @@ import uuid
 from datetime import timedelta
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StringConstraints, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from app.game import daily
+from app.match import valid_race_seconds
 
 Nickname = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=20, pattern=r"^[\w .\-]+$")]
 MatchMode = Literal["shootout", "race", "horse"]
@@ -84,10 +85,17 @@ class ProfileUpdate(BaseModel):
 class RoomCreate(BaseModel):
     mode: MatchMode = "race"
     difficulty: Difficulty = "starter"
-    # Race length; ignored for shootouts.
-    race_seconds: int = Field(60, ge=30, le=300)
+    # Race length (30 s, 90 s or whole minutes up to 30); ignored for shootouts.
+    race_seconds: int = 60
     # Series length: first to best_of // 2 + 1 wins, across rematches.
     best_of: Literal[1, 3, 5] = 1
+
+    @field_validator("race_seconds")
+    @classmethod
+    def race_length(cls, v: int) -> int:
+        if not valid_race_seconds(v):
+            raise ValueError("race length must be 30 s, 90 s or whole minutes up to 30")
+        return v
 
 
 class PlayerOut(BaseModel):

@@ -226,7 +226,7 @@ def cancel_quick_match(user: CurrentUser, request: Request) -> None:
 # ── Scores / leaderboard ──
 
 PERIODS = {"day": timedelta(days=1), "week": timedelta(days=7), "all": None}
-ModeKey = Annotated[str, Query(pattern=r"^(free|streak|timed\d{2,4}|daily\d{8}|shootout|race\d{2,3})$")]
+ModeKey = Annotated[str, Query(pattern=r"^(free|streak|timed\d{2,4}|daily\d{8}|shootout|race\d{2,4})$")]
 DifficultyFilter = Annotated[str | None, Query(pattern=r"^(rookie|starter|allstar|legend)$")]
 
 
