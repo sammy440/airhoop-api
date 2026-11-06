@@ -192,15 +192,19 @@ def test_score_validation(client):
 def test_impossible_scores_are_rejected(client):
     t, _ = make_guest(client, "Cheat")
     assert score(client, t, points=9 * 10, makes=10, shots=10).status_code == 201  # perfect starter run
+    # ... and every make doubled in clutch time (at most 10 of them: the last 10 s)
+    assert score(client, t, points=9 * 2 * 10, makes=10, shots=10).status_code == 201
+    assert score(client, t, points=9 * 30, makes=20, shots=20).status_code == 201
     for bad in [
         dict(makes=11, shots=10),  # more makes than shots
-        dict(points=91, makes=10, shots=10),  # beyond 9 points per make on starter
+        dict(points=181, makes=10, shots=10),  # beyond 9 points per make on starter, doubled
+        dict(points=271, makes=20, shots=20),  # more than 10 clutch makes
         dict(mode="timed30", points=10, makes=10, shots=31),  # > 1 shot per second
         dict(mode="timed10", points=1, makes=1, shots=1),  # timed runs are 30 s+
         dict(mode="streak", points=11, makes=10, shots=10),  # streak longer than makes
     ]:
         assert score(client, t, **bad).status_code == 422, bad
-    assert score(client, t, difficulty="legend", points=180, makes=10, shots=10).status_code == 201
+    assert score(client, t, difficulty="legend", points=360, makes=10, shots=10).status_code == 201
 
 
 def test_rate_limits(client):

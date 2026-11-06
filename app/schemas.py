@@ -143,6 +143,9 @@ class QuickMatchOut(BaseModel):
 
 # Most points one make can earn: (2 + swish or bank 1) × streak ×3 × difficulty.
 MAX_MAKE_POINTS = {"rookie": 9, "starter": 9, "allstar": 13.5, "legend": 18}
+# Clutch time (frontend lib/game/clutch.ts): makes in a timed run's last 10 s score double.
+# A shot takes over a second, so at most this many makes earn it.
+CLUTCH_MAKES = 10
 
 
 class ScoreCreate(BaseModel):
@@ -166,7 +169,7 @@ class ScoreCreate(BaseModel):
         if self.mode == "streak":
             if self.score > self.makes:
                 raise ValueError("streak longer than makes")
-        elif self.score > self.makes * MAX_MAKE_POINTS[self.difficulty]:
+        elif self.score > (self.makes + min(self.makes, CLUTCH_MAKES)) * MAX_MAKE_POINTS[self.difficulty]:
             raise ValueError("score too high for the makes")
         if self.mode.startswith("timed"):
             seconds = int(self.mode[5:])
