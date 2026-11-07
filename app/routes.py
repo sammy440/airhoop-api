@@ -6,23 +6,34 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import delete, func, text, update
 from sqlmodel import Session, select
 
 from .auth import CurrentUser, GoogleTokenError, SessionDep, create_guest, issue_token, user_from_token
 from .db import get_engine
+from .game.achievements import CLAIMABLE
 from .game.cosmetics import usable_loadout
 from .game.xp import XpStats, level_for, xp_for
-from .models import AuthToken, Match, Score, Throw, User
+from . import achievements, bests
+from .history import add_day, match_history, shooting_stats
+from .models import AuthToken, Match, MatchPlayer, PlayerDay, SavedBest, Score, Throw, User, UserAchievement
 from .ratelimit import client_ip, rate_limit
 from .rooms import RoomError, RoomManager
 from .schemas import (
+    AchievementClaimed,
+    AchievementOut,
+    BestIn,
+    BEST_KEY_PATTERN,
+    BestOut,
+    BestSaved,
+    GhostShot,
     ClientError,
     GoogleOut,
     GoogleSignIn,
     GuestCreate,
     GuestOut,
+    HistoryMatch,
     LeaderboardEntry,
     PersonalBest,
     PersonalBests,
@@ -33,6 +44,7 @@ from .schemas import (
     RoomOut,
     ScoreCreate,
     ScoreSaved,
+    ShootingStats,
     UserOut,
     XpGain,
     XpOut,
@@ -169,8 +181,17 @@ def gain_xp(body: XpGain, user: CurrentUser, session: SessionDep) -> XpOut:
     if daily:
         user.last_daily = daily
     session.add(user)
+    # The shooting trends count every shot sent, capped or not (no XP rides on them).
+    if body.shots:
+        add_day(
+            session, user.id, "solo",
+            shots=body.shots, makes=body.makes, swishes=body.swishes, banks=body.banks, misses=dict(body.misses), best_streak=body.best_streak,
+        )
+    if daily:
+        add_day(session, user.id, "solo", daily=True, day=daily.removeprefix("daily"))
+    unlocked = achievements.check_totals(session, user.id) if body.shots or daily else []
     session.commit()
-    return XpOut(xp=user.xp, level=level_for(user.xp), gained=gained, capped=gained < earned)
+    return XpOut(xp=user.xp, level=level_for(user.xp), gained=gained, capped=gained < earned, achievements=unlocked)
 
 
 @router.delete("/auth/me", status_code=status.HTTP_204_NO_CONTENT)
@@ -179,9 +200,73 @@ def delete_me(user: CurrentUser, session: SessionDep) -> None:
     session.exec(delete(AuthToken).where(AuthToken.user_id == user.id))
     session.exec(delete(Throw).where(Throw.user_id == user.id))
     session.exec(delete(Score).where(Score.user_id == user.id))
+    session.exec(delete(MatchPlayer).where(MatchPlayer.user_id == user.id))
+    session.exec(delete(PlayerDay).where(PlayerDay.user_id == user.id))
+    session.exec(delete(SavedBest).where(SavedBest.user_id == user.id))
+    session.exec(delete(UserAchievement).where(UserAchievement.user_id == user.id))
     session.exec(update(Match).where(Match.winner_id == user.id).values(winner_id=None))
     session.delete(user)
     session.commit()
+
+
+# ── Your history ──
+
+
+@router.get("/me/matches", dependencies=[Depends(rate_limit("history", 60, 60))])
+def my_matches(
+    user: CurrentUser,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    before: datetime | None = None,
+) -> list[HistoryMatch]:
+    """Your finished multiplayer matches, newest first. Page with `before` = the last one's `started_at`."""
+    return match_history(session, user.id, limit, before)
+
+
+@router.get("/me/stats", dependencies=[Depends(rate_limit("history", 60, 60))])
+def my_stats(user: CurrentUser, session: SessionDep, days: Annotated[int, Query(ge=1, le=365)] = 30) -> ShootingStats:
+    """Your shooting over the last `days` UTC days (solo + multiplayer), where misses land, and your match record."""
+    return shooting_stats(session, user.id, days)
+
+
+@router.get("/me/achievements", dependencies=[Depends(rate_limit("history", 60, 60))])
+def my_achievements(user: CurrentUser, session: SessionDep) -> list[AchievementOut]:
+    """What you've earned, oldest first (ids: the browser has the names and rules)."""
+    return [AchievementOut(id=a.achievement, unlocked_at=a.unlocked_at) for a in achievements.earned(session, user.id)]
+
+
+@router.post("/me/achievements/{achievement}", dependencies=[Depends(rate_limit("claim", 30, 60))])
+def claim_achievement(achievement: str, user: CurrentUser, session: SessionDep) -> AchievementClaimed:
+    """Solo moments only the browser sees (buzzer_beater, green_light, world_tour). Everything else is the server's call."""
+    if achievement not in CLAIMABLE:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"code": "not_claimable", "message": "That achievement is awarded by the server"})
+    new = achievements.award(session, user.id, [achievement])
+    session.commit()
+    row = session.get(UserAchievement, (user.id, achievement))
+    assert row is not None
+    return AchievementClaimed(id=achievement, unlocked_at=row.unlocked_at, new=bool(new))
+
+
+@router.get("/me/bests", dependencies=[Depends(rate_limit("history", 60, 60))])
+def my_saved_bests(user: CurrentUser, session: SessionDep) -> dict[str, BestOut]:
+    """Your personal best on every board you've played (dailies: the last two days only)."""
+    return bests.list_bests(session, user.id)
+
+
+@router.get("/me/bests/{key}/ghost", dependencies=[Depends(rate_limit("history", 60, 60))])
+def my_ghost(key: Annotated[str, Path(pattern=BEST_KEY_PATTERN)], user: CurrentUser, session: SessionDep) -> list[GhostShot]:
+    shots = bests.ghost(session, user.id, key)
+    if not shots:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, {"code": "no_ghost", "message": "No ghost for that board"})
+    return [GhostShot(**g) for g in shots]
+
+
+@router.put("/me/bests/{key}", dependencies=[Depends(rate_limit("bests", 30, 60))])
+def save_best(key: Annotated[str, Path(pattern=BEST_KEY_PATTERN)], body: BestIn, user: CurrentUser, session: SessionDep) -> BestSaved:
+    """Keeps whichever is better, this best or the stored one; `updated` says which. The ghost travels with its best."""
+    if (why := bests.check(key, body)) is not None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"code": "implausible_best", "message": why})
+    return bests.save(session, user.id, key, body)
 
 
 # ── Rooms ──

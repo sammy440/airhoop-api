@@ -1,5 +1,5 @@
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
@@ -10,6 +10,7 @@ from app.match import valid_race_seconds
 Nickname = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=20, pattern=r"^[\w .\-]+$")]
 MatchMode = Literal["shootout", "race", "horse"]
 Difficulty = Literal["rookie", "starter", "allstar", "legend"]
+MissKind = Literal["short", "long", "left", "right", "rim", "airball"]
 
 
 Hex = Annotated[str, StringConstraints(pattern=r"^#[0-9a-fA-F]{6}$", to_lower=True)]
@@ -204,6 +205,8 @@ class XpGain(BaseModel):
     runs: int = Field(0, ge=0, le=50)
     # The daily challenge finished in this batch, e.g. "daily20261104" (earns its bonus once)
     daily: Annotated[str, StringConstraints(pattern=r"^daily\d{8}$")] | None = None
+    # Misses by kind, for the shooting trends on the profile (no XP)
+    misses: dict[MissKind, Annotated[int, Field(ge=0, le=2000)]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def plausible(self) -> "XpGain":
@@ -213,6 +216,8 @@ class XpGain(BaseModel):
             raise ValueError("swishes and banks are makes")
         if self.best_streak > self.makes:
             raise ValueError("streak longer than makes")
+        if sum(self.misses.values()) > self.shots - self.makes:
+            raise ValueError("more misses than missed shots")
         return self
 
 
@@ -222,6 +227,8 @@ class XpOut(BaseModel):
     gained: int
     # Hit today's solo limit: some of this batch didn't count
     capped: bool = False
+    # Achievements this batch unlocked (ids; the browser has the names)
+    achievements: list[str] = Field(default_factory=list)
 
 
 class ScoreSaved(BaseModel):
@@ -261,3 +268,124 @@ class ClientError(BaseModel):
     stack: str | None = Field(default=None, max_length=4000)
     url: str | None = Field(default=None, max_length=300)
     release: str | None = Field(default=None, max_length=64)
+
+
+# ── Match history and shooting trends (GET /me/matches, /me/stats) ──
+
+
+class HistoryPlayer(BaseModel):
+    user_id: uuid.UUID
+    nickname: str
+    avatar: Avatar | None = None
+    rank: int
+    won: bool
+    forfeited: bool
+    points: int
+    shots: int
+    makes: int
+    swishes: int
+    banks: int
+    best_streak: int
+    letters: int | None = None
+
+
+class HistoryMatch(BaseModel):
+    id: uuid.UUID
+    mode: MatchMode
+    difficulty: Difficulty
+    race_seconds: int | None
+    started_at: datetime
+    ended_at: datetime | None
+    # "complete" | "time" | "forfeit" | "aborted" (null for matches played before this was recorded)
+    reason: str | None
+    you: HistoryPlayer
+    # Everyone, you included, best first
+    players: list[HistoryPlayer]
+
+
+class ShotTotals(BaseModel):
+    shots: int = 0
+    makes: int = 0
+    swishes: int = 0
+    banks: int = 0
+    misses: dict[MissKind, int] = Field(default_factory=dict)
+
+
+class DayStats(BaseModel):
+    day: str  # YYYY-MM-DD (UTC)
+    solo: ShotTotals | None = None
+    match: ShotTotals | None = None
+
+
+class MissBias(BaseModel):
+    """Where refereed misses came down through rim height, on average (m from the rim's centre)."""
+
+    misses: int
+    depth: float  # + = long
+    side: float  # + = right
+
+
+class ModeRecord(BaseModel):
+    played: int
+    wins: int
+
+
+class ShootingStats(BaseModel):
+    days: int
+    totals: ShotTotals
+    solo: ShotTotals
+    match: ShotTotals
+    # Only days with play, oldest first
+    by_day: list[DayStats]
+    miss_bias: MissBias | None
+    # All-time multiplayer record by mode (aborted games left out)
+    record: dict[str, ModeRecord]
+
+
+# ── Personal bests and ghosts, kept with the account (/me/bests) ──
+
+# The browser's best keys (modes.ts bestKey): timed and daily runs, streaks, and free play per difficulty.
+BEST_KEY_PATTERN = r"^((timed\d{2,4}|streak|free):(rookie|starter|allstar|legend)|daily\d{8})$"
+GHOST_MAX_SHOTS = 600
+
+
+class GhostShot(BaseModel):
+    """One launch of a ghost run (ghostRun.ts GhostShot)."""
+
+    t: float = Field(ge=0, le=1900)  # run time at release (s)
+    speed: float = Field(ge=0, le=100)
+    angle: float = Field(ge=-90, le=90)
+    aim: float = Field(ge=-90, le=90)
+    wind: float = Field(ge=-50, le=50)
+    phase: float = Field(ge=-1000, le=100_000)
+    points: int = Field(ge=0, le=200)
+
+
+class BestIn(BaseModel):
+    points: int = Field(ge=0, le=100_000)
+    makes: int = Field(ge=0, le=10_000)
+    streak: int = Field(ge=0, le=10_000)
+    at: datetime
+    ghost: list[GhostShot] | None = Field(default=None, max_length=GHOST_MAX_SHOTS)
+
+
+class BestOut(BaseModel):
+    points: int
+    makes: int
+    streak: int
+    at: datetime
+    has_ghost: bool
+
+
+class BestSaved(BestOut):
+    # False: the stored best was better, so it was kept (and is what's returned)
+    updated: bool
+
+
+class AchievementOut(BaseModel):
+    id: str
+    unlocked_at: datetime
+
+
+class AchievementClaimed(AchievementOut):
+    new: bool

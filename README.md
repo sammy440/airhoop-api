@@ -43,6 +43,13 @@ Room and match timing (reconnect grace, heartbeats, shot clocks, buzzers) is tes
 | POST | `/scores` | Bearer | solo run `{mode, difficulty, score, shots, makes}` → `{best, rank}` · 30/min |
 | GET | `/leaderboard?mode=timed60&difficulty=&period=day\|week\|all&limit=20` | | best per player, ties share a rank, with avatars |
 | GET | `/leaderboard/me?mode=&difficulty=` | Bearer | your best, runs and rank for day / week / all |
+| GET | `/me/matches?limit=20&before=` | Bearer | your finished multiplayer matches, newest first, with everyone's line (rank, points, makes, swishes, letters); page with `before` = the last one's `started_at` · 60/min |
+| GET | `/me/stats?days=30` | Bearer | your shooting over the last 1–365 UTC days: totals, solo vs match, per day, misses by kind, where refereed misses land (`miss_bias`), and your all-time record by mode · 60/min |
+| GET | `/me/achievements` | Bearer | what you've earned `[{id, unlocked_at}]`, oldest first · 60/min |
+| POST | `/me/achievements/{id}` | Bearer | claim a solo moment only the browser sees: `buzzer_beater`, `green_light`, `world_tour` (anything else: 422 `not_claimable`) → `{id, unlocked_at, new}` · 30/min |
+| GET | `/me/bests` | Bearer | your personal best per board, keyed like the browser's bests (`timed60:rookie`, `streak:legend`, `free:starter`, `daily20261106`; dailies from the last 2 days only) with `has_ghost` · 60/min |
+| GET | `/me/bests/{key}/ghost` | Bearer | that best's ghost: its launches `[{t, speed, angle, aim, wind, phase, points}]` (404 if none) · 60/min |
+| PUT | `/me/bests/{key}` | Bearer | `{points, makes, streak, at, ghost?}` → keeps whichever is better, this or the stored one (`updated` says which). Streak boards compare the streak, the rest points. Checked like `/scores`; a ghost (timed/daily only, ≤ 1 shot a second, none after the buzzer) must add up to the run's points and makes · 30/min |
 | POST | `/telemetry/errors` | | browser crash report `{message, stack?, url?, release?}` · 20/min |
 
 Solo scores are simulated in the browser, so they're self-reported, but the server rejects impossible runs:
@@ -65,9 +72,23 @@ than the last (max level 50).
 |---|---|---|---|
 | POST | `/xp` | Bearer | Solo play since the last sync, as stats `{shots, makes, swishes, banks, best_streak, runs, daily?}` → `{xp, level, gained, capped}` · 30/min |
 
+`/xp` may also carry `misses: {short, long, left, right, rim, airball}` (counts, at most the missed shots). They earn
+nothing; with the other counts they're added to the player's day in `player_days` (`app/history.py`), which is what
+`/me/stats` reads. Refereed multiplayer throws are added there too, as they're decided, under `source: match`.
+
 The client never sends an XP number: the server works it out from the stats (sanity-checked like scores) and caps
 solo XP at 6,000 per UTC day. Multiplayer XP is awarded by the server at match end from the refereed stats and
 sent to each player as `xp{gained, xp, level}`. `/auth/me` includes `xp` and `level`; room players include `level`.
+
+### Achievements
+
+`app/game/achievements.py` (mirrored by the frontend's `achievements.ts`; both test suites pin the ids). Most are the
+server's call: **totals** from the player's history in `player_days` (makes, swishes, banks, shots, best streak,
+dailies finished, most dailies in a row), checked on every `/xp` sync and at match end, and **match** ones from the
+refereed line at the end of a match that wasn't aborted (`first_win`, `horse_clean`: win H-O-R-S-E with no letter,
+`shootout_perfect`: win a shootout making every shot, at least 5, `series_win`). New ones come back in `/xp`'s
+`achievements` and, after a match, as `achievements{ids}` (after `xp`). Three solo moments are claimed by the
+browser and so self-reported, like solo scores.
 
 Ball skin and trail: `PATCH /auth/me {loadout: {ball, trail}}` stores the player's pick; `/auth/me` and room players
 carry `loadout` as others may see it, i.e. only what's unlocked at their level (`app/game/cosmetics.py`, the same
@@ -76,7 +97,7 @@ table as the frontend's `cosmetics.ts`); anything locked or unknown shows as the
 ## WebSocket `/ws/{code}?token=…`
 
 Client → server: `ping{t}` · `ready{ready}` · `start` (host) · `end` (host) · `rematch` (host) · `settings{mode?, difficulty?, raceSeconds?, bestOf?}` (host, lobby only) · `react{reaction}` · `chat{text | quick}` · `leave`
-Server → client: `room_state{room, you}` · `presence{event: joined|left|disconnected|reconnected, player}` · `reaction{playerId, reaction}` · `xp{gained, xp, level}` (yours, at match end) · `pong{t}` · `error{code, message}`
+Server → client: `room_state{room, you}` · `presence{event: joined|left|disconnected|reconnected, player}` · `reaction{playerId, reaction}` · `xp{gained, xp, level}` (yours, at match end) · `achievements{ids}` (yours, new, after `xp`) · `pong{t}` · `error{code, message}`
 
 Chat: `chat{text}` or `chat{quick}` → `chat{playerId, text | quick}` to everyone in the room (`app/chat.py`). **Never
 stored**: relayed and forgotten (no table, no log line, no history kept for reconnects). Rooms joined by code allow
@@ -163,7 +184,9 @@ TypeScript code; regenerate with `GEN_PARITY=1 npx vitest run src/lib/game/parit
 **Dropped players:** a disconnected player keeps their seat for 30 s (turns still time out); after that, or on
 `leave`, they forfeit. If one player remains they win by forfeit. Reconnecting mid-match replays a snapshot.
 
-Finished matches store `winner_id`, every throw (`throws`), and each player's points in `scores` under
+Finished matches store `winner_id` and how it ended (`reason`), every throw (`throws`, with the server's verdict:
+swish, bank, miss kind, aim, green, and where it came down: `depth_error` + = long, `side_error` + = right), each
+player's line in `match_players` (for `/me/matches`), and each player's points in `scores` under
 `shootout` / `race{seconds}` for the leaderboard (not H-O-R-S-E).
 
 ## Deploy

@@ -28,7 +28,7 @@ def test_gain_xp_counts_play_not_claims(client):
     token, _ = make_guest(client, "Xp")
     r = client.post("/xp", json={"shots": 20, "makes": 12, "swishes": 3, "banks": 1, "best_streak": 5, "runs": 1}, headers=auth(token))
     assert r.status_code == 200
-    assert r.json() == {"xp": 200, "level": 2, "gained": 200, "capped": False}
+    assert r.json() == {"xp": 200, "level": 2, "gained": 200, "capped": False, "achievements": ["first_bucket", "streak_5"]}
     me = client.get("/auth/me", headers=auth(token)).json()
     assert me["xp"] == 200 and me["level"] == 2
 

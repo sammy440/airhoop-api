@@ -177,7 +177,8 @@ class QueueEntry:
 
 
 Hook = Callable[[Room], Awaitable[None]]
-ThrowHook = Callable[[Room, str, dict[str, Any], ShotSim, int], Awaitable[None]]
+# (room, player id, the throw message, the server's simulation, the shot_result sent to the room)
+ThrowHook = Callable[[Room, str, dict[str, Any], ShotSim, dict[str, Any]], Awaitable[None]]
 
 
 class RoomManager:
@@ -440,7 +441,7 @@ class RoomManager:
             return
         await self._match_out(room, out)
         if self.on_throw:
-            await self.on_throw(room, player.id, msg, sim, out[0]["points"])
+            await self.on_throw(room, player.id, msg, sim, out[0])
         if room.match.finished:
             await self._finish_match(room)
 
