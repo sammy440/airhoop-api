@@ -29,8 +29,8 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql+psycopg://airhoops:airhoops@localhost:5432/airhoops_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13" # same as the Dockerfile
           cache: pip
@@ -56,8 +56,8 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://airhoops:airhoops@localhost:5432/airhoops
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -75,14 +75,14 @@ jobs:
     name: Parity fixtures match the frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: airhoops-backend
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: sammy440/airhoops
           path: airhoops-frontend
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
