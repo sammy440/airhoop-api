@@ -19,6 +19,7 @@ from .game.cosmetics import usable_loadout
 from .game.xp import XpStats, level_for, xp_for
 from . import achievements
 from .game.achievements import from_match
+from .game.rating import changes as rating_changes
 from .history import add_day
 from .models import Match, MatchPlayer, Score, Throw, User
 from .ratelimit import RateLimiter
@@ -49,11 +50,23 @@ def persistence_hooks(manager: RoomManager) -> None:
 
         series_winner = room.series_winner if room.best_of > 1 else None
 
-        def write() -> tuple[dict[str, tuple[int, int, Any]], dict[str, list[str]]]:
-            """Returns each player's (XP gained, XP total, chosen loadout), and their new achievements."""
+        def write() -> tuple[dict[str, tuple[int, int, Any]], dict[str, list[str]], dict[str, tuple[int, int]]]:
+            """Returns each player's (XP gained, XP total, chosen loadout), their new achievements, and (new rating, change)."""
             awarded: dict[str, tuple[int, int, Any]] = {}
             unlocked: dict[str, list[str]] = {}
+            rated: dict[str, tuple[int, int]] = {}  # player → (new rating, change)
             with Session(get_engine()) as s:
+                # Ratings from the refereed ranks (not aborted games, not players who erased their data)
+                if result and result["reason"] != "aborted":
+                    users = {row["playerId"]: s.get(User, uuid.UUID(row["playerId"])) for row in result["standings"]}
+                    field = [(pid, u.rating, u.rated_games, row["rank"]) for row in result["standings"] if (u := users[(pid := row["playerId"])]) is not None]
+                    if len(field) >= 2:
+                        for pid, change in rating_changes(field).items():
+                            u = users[pid]
+                            u.rating += change
+                            u.rated_games += 1
+                            s.add(u)
+                            rated[pid] = (u.rating, change)
                 m = s.get(Match, match_id)
                 if m:
                     m.ended_at = datetime.now(UTC)
@@ -79,6 +92,7 @@ def persistence_hooks(manager: RoomManager) -> None:
                                 banks=row.get("banks", 0),
                                 best_streak=row.get("best", 0),
                                 letters=row.get("letters") if room.match and room.match.mode == "horse" else None,
+                                rating_change=rated[row["playerId"]][1] if row["playerId"] in rated else None,
                             )
                         )
                 # Verified multiplayer scores feed the leaderboard (not for aborted games).
@@ -105,9 +119,9 @@ def persistence_hooks(manager: RoomManager) -> None:
                         if new:
                             unlocked[row["playerId"]] = sorted(set(new))
                 s.commit()
-            return awarded, unlocked
+            return awarded, unlocked, rated
 
-        awarded, unlocked = await asyncio.to_thread(write)
+        awarded, unlocked, rated = await asyncio.to_thread(write)
         for pid, (gained, total, loadout) in awarded.items():
             player = room.players.get(pid)
             if player is None:
@@ -116,6 +130,8 @@ def persistence_hooks(manager: RoomManager) -> None:
             player.loadout = usable_loadout(loadout, player.level)  # a level-up may have unlocked their pick
             if player.ws is not None:
                 await manager._send(player.ws, {"type": "xp", "gained": gained, "xp": total, "level": player.level})
+                if pid in rated:
+                    await manager._send(player.ws, {"type": "rating", "rating": rated[pid][0], "change": rated[pid][1]})
                 if pid in unlocked:
                     await manager._send(player.ws, {"type": "achievements", "ids": unlocked[pid]})
 

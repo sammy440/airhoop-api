@@ -46,6 +46,9 @@ class UserOut(BaseModel):
     xp: int = 0
     level: int = 1
     loadout: dict[str, str] | None = None
+    rating: int = 1000
+    # Fewer than 20 rated matches: the rating is still settling
+    provisional: bool = True
 
 
 class GuestOut(BaseModel):
@@ -127,6 +130,8 @@ class RoomOut(BaseModel):
     series: SeriesOut
     # Made by quick match (strangers, auto-started)
     quick: bool = False
+    # People watching (ws ?watch=1)
+    spectators: int = 0
 
 
 class QuickMatchRequest(BaseModel):
@@ -287,6 +292,7 @@ class HistoryPlayer(BaseModel):
     banks: int
     best_streak: int
     letters: int | None = None
+    rating_change: int | None = None
 
 
 class HistoryMatch(BaseModel):
@@ -389,3 +395,24 @@ class AchievementOut(BaseModel):
 
 class AchievementClaimed(AchievementOut):
     new: bool
+
+
+# ── Invites (/invites) ──
+
+
+class InviteCreate(BaseModel):
+    to: uuid.UUID
+    code: Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True, min_length=4, max_length=8)]
+
+
+class InviteOut(BaseModel):
+    from_id: uuid.UUID
+    nickname: str
+    avatar: Avatar | None = None
+    code: str
+    mode: str
+    difficulty: str
+    race_seconds: int
+    best_of: int
+    players: int
+    age_s: float

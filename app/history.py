@@ -98,6 +98,7 @@ def match_history(s: Session, user_id: uuid.UUID, limit: int, before: datetime |
                 banks=mp.banks,
                 best_streak=mp.best_streak,
                 letters=mp.letters,
+                rating_change=mp.rating_change,
             )
         )
 

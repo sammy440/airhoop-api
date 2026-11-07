@@ -40,6 +40,9 @@ Room and match timing (reconnect grace, heartbeats, shot clocks, buzzers) is tes
 | POST | `/rooms/{code}/join` | Bearer | take a seat (409 if full / already playing) · 30/min |
 | POST | `/quickmatch` | Bearer | `{difficulty: any\|rookie\|…}` → `{status: waiting, waiting, waited_s}` or `{status: matched, code}` · poll every ~2 s; you leave the queue after 10 s without a poll (`QUEUE_TIMEOUT_S`) · 60/min |
 | DELETE | `/quickmatch` | Bearer | leave the queue |
+| POST | `/invites` | Bearer | `{to, code}`: invite someone **you've played a match with** (else 403 `not_an_opponent`) to your room, while it's in the lobby with a seat free (not quick match). One live invite per sender; kept in memory, like rooms · 20/min |
+| GET | `/invites` | Bearer | invites you can still take up, newest first, with the room's game: dropped once the room starts, fills, goes, its sender leaves, after 10 min, or once you join · poll ~10 s · 30/min |
+| DELETE | `/invites/{from_id}` | Bearer | dismiss one |
 | POST | `/scores` | Bearer | solo run `{mode, difficulty, score, shots, makes}` → `{best, rank}` · 30/min |
 | GET | `/leaderboard?mode=timed60&difficulty=&period=day\|week\|all&limit=20` | | best per player, ties share a rank, with avatars |
 | GET | `/leaderboard/me?mode=&difficulty=` | Bearer | your best, runs and rank for day / week / all |
@@ -121,7 +124,24 @@ connected and all have readied up.
 | Sweeper interval (expired seats, empty rooms) | 5 s | `SWEEP_INTERVAL_S` |
 | Players per room | 4 | `MAX_PLAYERS` |
 
+**Watching:** `/ws/{code}?token=…&watch=1` takes no seat and gets everything the players get (`room_state` with
+`you: null, spectating: true`, the match from a snapshot if it's already running, reactions and chat), but can only
+`ping` and `leave`; anything else is `error{code: "spectating"}`. Up to 20 watchers a room (`watchers_full`); quick
+matches, between strangers, can't be watched (`not_watchable`, close `4403`); a player can't watch their own room.
+`room.spectators` counts them. Watchers are closed with `4404` when the room goes.
+
 Close codes: `4000` no heartbeat · `4001` opened in another tab · `4401` bad token · `4404` no such room · `4409` full/playing.
+
+### Skill rating
+
+`app/game/rating.py`: Elo from refereed results, updated at the end of every multiplayer match that wasn't aborted
+(friends' rooms too). A 3–4 player match counts as every pair in it, by rank (beat, tie, lose), averaged; forfeits
+rank last. K is 40 for a player's first 20 rated matches (`provisional` in `/auth/me`), then 24; nobody drops below
+100. Everyone starts at 1000. After a match each player gets `rating{rating, change}`, and `/me/matches` shows each
+line's `rating_change`.
+
+Quick match pairs the longest-waiting compatible player **within the rating window**: 150 points apart at once,
+40 more for each second the longer-waiting of the two has waited, and anyone after 20 s, so nobody waits forever.
 
 ### Google sign-in
 

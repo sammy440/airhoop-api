@@ -43,6 +43,7 @@ from .chat import CHAT_BURST, CHAT_WINDOW_S, QUICK_CHAT, clean_text
 from .config import Settings
 from .game.physics import ShotSim
 from .game.rules import DIFFICULTIES
+from .game import rating as rating_rules
 from .match import MatchEngine, MatchError, valid_race_seconds
 
 Phase = Literal["lobby", "ready", "in_progress", "finished"]
@@ -63,6 +64,7 @@ REACTION_WINDOW_S = 3.0  # … per player in this window; extras are dropped qui
 CLOSE_HEARTBEAT = 4000
 CLOSE_REPLACED = 4001
 CLOSE_REMOVED = 4002
+CLOSE_NOT_FOUND = 4404
 
 
 class RoomError(Exception):
@@ -98,6 +100,20 @@ class Player:
 
 
 @dataclass
+class Spectator:
+    """Someone watching a room: they see everything the players see, and can't act."""
+
+    user_id: str
+    nickname: str
+    ws: WebSocket
+    last_seen: float
+
+
+# Watchers per room (quick-match rooms, between strangers, can't be watched).
+MAX_SPECTATORS = 20
+
+
+@dataclass
 class Room:
     code: str
     host_id: str
@@ -117,6 +133,7 @@ class Room:
     # Made by quick match: both seats start ready, and the first game starts once both are connected.
     quick: bool = False
     auto_start: bool = False
+    spectators: dict[str, Spectator] = field(default_factory=dict)
 
     @property
     def wins_needed(self) -> int:
@@ -140,6 +157,7 @@ class Room:
             "race_seconds": self.race_seconds,
             "host_id": self.host_id,
             "quick": self.quick,
+            "spectators": len(self.spectators),
             "series": {
                 "best_of": self.best_of,
                 "wins": self.series_wins,
@@ -163,6 +181,23 @@ class Room:
 
 
 @dataclass
+class Invite:
+    """An invite to a room, from someone you've played before. In memory only, like rooms."""
+
+    from_id: str
+    nickname: str
+    avatar: dict[str, Any] | None
+    code: str
+    at: float
+
+
+# An invite lasts this long (s), unless its room starts, fills up, goes, or its sender leaves it first.
+INVITE_TTL_S = 600
+# Invites a player can be holding at once (one per sender; the oldest go first).
+MAX_INVITES = 10
+
+
+@dataclass
 class QueueEntry:
     """A player waiting for a quick match. They poll; one who stops polling drops out."""
 
@@ -174,6 +209,7 @@ class QueueEntry:
     last_poll: float
     # Set when someone else's poll paired them; handed over on their next poll.
     room_code: str | None = None
+    rating: int = rating_rules.DEFAULT
 
 
 Hook = Callable[[Room], Awaitable[None]]
@@ -187,6 +223,8 @@ class RoomManager:
         self.clock = clock
         self.rooms: dict[str, Room] = {}
         self.queue: dict[str, QueueEntry] = {}
+        # Invites by who they're for, then by who sent them
+        self.invites: dict[str, dict[str, Invite]] = {}
         # REST handlers run in a thread pool: two polls must never grab the same partner.
         self._queue_lock = threading.Lock()
         self._lock: asyncio.Lock | None = None
@@ -244,10 +282,12 @@ class RoomManager:
 
     # ── Quick match ──
 
-    def quick_match(self, user_id: str, nickname: str, difficulty: str, avatar: dict[str, Any] | None = None) -> dict[str, Any]:
+    def quick_match(
+        self, user_id: str, nickname: str, difficulty: str, avatar: dict[str, Any] | None = None, rating: int = rating_rules.DEFAULT
+    ) -> dict[str, Any]:
         """
         One poll from a player looking for a game: pairs them with the longest-waiting compatible
-        player, or keeps them in the queue. Returns {"status": "matched", "code"} or
+        player of similar rating (the gap allowed widens as either waits), or keeps them in the queue. Returns {"status": "matched", "code"} or
         {"status": "waiting", "waiting": players in the queue, "waited_s"}.
         """
         with self._queue_lock:
@@ -263,10 +303,18 @@ class RoomManager:
             if entry is None or entry.difficulty != difficulty:
                 entry = QueueEntry(user_id, nickname, avatar, difficulty, since=entry.since if entry else now, last_poll=now)
                 self.queue[user_id] = entry
-            entry.last_poll, entry.nickname, entry.avatar = now, nickname, avatar
+            entry.last_poll, entry.nickname, entry.avatar, entry.rating = now, nickname, avatar, rating
+
+            def close_enough(e: QueueEntry) -> bool:
+                waited = max(now - entry.since, now - e.since)
+                return abs(e.rating - rating) <= rating_rules.window(waited)
 
             partner = min(
-                (e for e in self.queue.values() if e.user_id != user_id and e.room_code is None and _compatible(e.difficulty, difficulty)),
+                (
+                    e
+                    for e in self.queue.values()
+                    if e.user_id != user_id and e.room_code is None and _compatible(e.difficulty, difficulty) and close_enough(e)
+                ),
                 key=lambda e: e.since,
                 default=None,
             )
@@ -283,6 +331,64 @@ class RoomManager:
             partner.room_code = room.code
             del self.queue[user_id]
             return {"status": "matched", "code": room.code}
+
+    # ── Invites ──
+
+    def invite(self, from_id: str, nickname: str, avatar: dict[str, Any] | None, to_id: str, code: str) -> None:
+        """Invites `to_id` to a room the sender is in (still in the lobby, with a seat free)."""
+        room = self.get(code)
+        if from_id not in room.players:
+            raise RoomError("not_in_room", "You're not in that room", 403)
+        if to_id == from_id or to_id in room.players:
+            raise RoomError("already_in_room", "They're already in the room", 409)
+        if room.quick or room.phase not in ("lobby", "ready") or len(room.players) >= room.max_players:
+            raise RoomError("room_not_open", "That room can't take another player right now", 409)
+        box = self.invites.setdefault(to_id, {})
+        box.pop(from_id, None)
+        box[from_id] = Invite(from_id, nickname, avatar, room.code, self.clock())
+        while len(box) > MAX_INVITES:
+            box.pop(next(iter(box)))
+
+    def invites_for(self, user_id: str) -> list[dict[str, Any]]:
+        """Your invites that can still be taken up, newest first (stale ones are dropped)."""
+        box = self.invites.get(user_id, {})
+        now = self.clock()
+        live = []
+        for from_id, inv in list(box.items()):
+            room = self.rooms.get(inv.code)
+            ok = (
+                room is not None
+                and now - inv.at <= INVITE_TTL_S
+                and from_id in room.players
+                and user_id not in room.players
+                and room.phase in ("lobby", "ready")
+                and len(room.players) < room.max_players
+            )
+            if not ok:
+                del box[from_id]
+                continue
+            assert room is not None
+            live.append(
+                {
+                    "from_id": from_id,
+                    "nickname": inv.nickname,
+                    "avatar": inv.avatar,
+                    "code": room.code,
+                    "mode": room.mode,
+                    "difficulty": room.difficulty,
+                    "race_seconds": room.race_seconds,
+                    "best_of": room.best_of,
+                    "players": len(room.players),
+                    "age_s": round(now - inv.at, 1),
+                }
+            )
+        if not box:
+            self.invites.pop(user_id, None)
+        return sorted(live, key=lambda i: i["age_s"])
+
+    def dismiss_invite(self, user_id: str, from_id: str) -> None:
+        box = self.invites.get(user_id, {})
+        box.pop(from_id, None)
 
     def leave_queue(self, user_id: str) -> None:
         with self._queue_lock:
@@ -303,6 +409,10 @@ class RoomManager:
             return room  # rejoining your own seat is always allowed
         if room.phase in ("in_progress", "finished"):
             raise RoomError("room_in_progress", "That match has already started", 409)
+        # Taking up an invite (or joining by code anyway) uses up the invites to this room
+        for from_id, inv in list(self.invites.get(user_id, {}).items()):
+            if inv.code == room.code:
+                del self.invites[user_id][from_id]
         if len(room.players) >= room.max_players:
             raise RoomError("room_full", "That room is full", 409)
         now = self.clock()
@@ -371,6 +481,55 @@ class RoomManager:
         await self.broadcast_state(room)
         assert room.match is not None
         await self._match_out(room, [room.match.start_msg(), room.match.scoreboard(), *filter(None, [room.match.turn_msg()])])
+
+    # ── Spectators ──
+
+    async def watch(self, code: str, user_id: str, nickname: str, ws: WebSocket) -> Room:
+        """Starts watching a room: its state now, the match so far, and everything after."""
+        async with self.lock:
+            room = self.get(code)
+            if room.quick:
+                raise RoomError("not_watchable", "Quick matches can't be watched", 403)
+            if user_id in room.players:
+                raise RoomError("already_in_room", "You're playing in this room", 409)
+            old = room.spectators.get(user_id)
+            if old is None and len(room.spectators) >= MAX_SPECTATORS:
+                raise RoomError("watchers_full", "That room has as many watchers as it can take", 409)
+            room.spectators[user_id] = Spectator(user_id, nickname, ws, self.clock())
+        if old is not None and old.ws is not ws:
+            await self._safe_close(old.ws, CLOSE_REPLACED, "Watching from another tab")
+        await self.broadcast_state(room)
+        if room.match is not None:
+            for m in room.match.snapshot():
+                await self._send(ws, {**m, "serverTime": self.clock()})
+        return room
+
+    async def unwatch(self, code: str, user_id: str, ws: WebSocket) -> None:
+        room = self.rooms.get(code)
+        if room is None:
+            return
+        s = room.spectators.get(user_id)
+        if s is not None and s.ws is ws:
+            del room.spectators[user_id]
+            await self.broadcast_state(room)
+
+    async def handle_spectator(self, code: str, user_id: str, ws: WebSocket, msg: dict[str, Any]) -> bool:
+        """A watcher's message: ping and leave only. Returns False when the socket should stop reading."""
+        room = self.rooms.get(code)
+        s = room.spectators.get(user_id) if room else None
+        if s is None or s.ws is not ws:
+            return False
+        s.last_seen = self.clock()
+        kind = msg.get("type")
+        if kind == "ping":
+            await self._send(ws, {"type": "pong", "t": msg.get("t"), "serverTime": self.clock()})
+            return True
+        if kind == "leave":
+            await self.unwatch(code, user_id, ws)
+            await self._safe_close(ws, 1000, "Stopped watching")
+            return False
+        await self._send(ws, {"type": "error", "code": "spectating", "message": "You're watching this room"})
+        return True
 
     async def disconnect(self, code: str, user_id: str, ws: WebSocket) -> None:
         async with self.lock:
@@ -538,6 +697,8 @@ class RoomManager:
             for p in list(room.players.values()):
                 if p.ws is not None:
                     await self._send(p.ws, payload)
+            for s in list(room.spectators.values()):
+                await self._send(s.ws, payload)
 
     def _apply(self, room: Room, player: Player, kind: Any, msg: dict[str, Any]) -> bool:
         is_host = player.id == room.host_id
@@ -651,6 +812,9 @@ class RoomManager:
                 if ws is not None:
                     await self._safe_close(ws, CLOSE_HEARTBEAT, "No heartbeat")
                     await self.disconnect(room.code, p.id, ws)
+            for sp in [sp for sp in room.spectators.values() if now - sp.last_seen > s.heartbeat_timeout_s]:
+                room.spectators.pop(sp.user_id, None)
+                await self._safe_close(sp.ws, CLOSE_HEARTBEAT, "No heartbeat")
             for p in expired:
                 await self._presence(room, "left", p)
                 await self._forfeit(room, p.id)
@@ -671,6 +835,9 @@ class RoomManager:
     async def _cleanup_if_empty(self, room: Room) -> None:
         if not room.players and self.rooms.get(room.code) is room:
             del self.rooms[room.code]
+            for s in list(room.spectators.values()):
+                await self._safe_close(s.ws, CLOSE_NOT_FOUND, "The room has closed")
+            room.spectators.clear()
 
     def _remove(self, room: Room, user_id: str) -> None:
         room.players.pop(user_id, None)
@@ -698,6 +865,8 @@ class RoomManager:
         for p in list(room.players.values()):
             if p.ws is not None:
                 await self._send(p.ws, {"type": "room_state", "room": state, "you": p.id})
+        for s in list(room.spectators.values()):
+            await self._send(s.ws, {"type": "room_state", "room": state, "you": None, "spectating": True})
 
     async def _presence(self, room: Room, event: str, player: Player) -> None:
         msg = {"type": "presence", "event": event, "player": {"id": player.id, "nickname": player.nickname}}

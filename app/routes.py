@@ -2,17 +2,19 @@
 
 import logging
 import secrets
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import delete, func, text, update
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from .auth import CurrentUser, GoogleTokenError, SessionDep, create_guest, issue_token, user_from_token
 from .db import get_engine
 from .game.achievements import CLAIMABLE
+from .game.rating import PROVISIONAL_GAMES
 from .game.cosmetics import usable_loadout
 from .game.xp import XpStats, level_for, xp_for
 from . import achievements, bests
@@ -34,6 +36,8 @@ from .schemas import (
     GuestCreate,
     GuestOut,
     HistoryMatch,
+    InviteCreate,
+    InviteOut,
     LeaderboardEntry,
     PersonalBest,
     PersonalBests,
@@ -95,6 +99,8 @@ def user_out(user: User) -> UserOut:
         xp=user.xp,
         level=level,
         loadout=usable_loadout(user.loadout, level),
+        rating=user.rating,
+        provisional=user.rated_games < PROVISIONAL_GAMES,
     )
 
 
@@ -294,13 +300,44 @@ def join_room(code: str, user: CurrentUser, request: Request) -> RoomOut:
         raise room_error(e) from e
 
 
+# ── Invites: play again with someone you've played ──
+
+
+def played_together(session: Session, a: uuid.UUID, b: uuid.UUID) -> bool:
+    mine = select(MatchPlayer.match_id).where(MatchPlayer.user_id == a)
+    return session.exec(select(MatchPlayer.match_id).where(MatchPlayer.user_id == b, col(MatchPlayer.match_id).in_(mine)).limit(1)).first() is not None
+
+
+@router.post("/invites", status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit("invites", 20, 60))])
+def send_invite(body: InviteCreate, user: CurrentUser, session: SessionDep, request: Request) -> dict[str, str]:
+    """Invite someone you've played a match with to your room. They see it on their next look at GET /invites."""
+    if body.to == user.id or not played_together(session, user.id, body.to):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {"code": "not_an_opponent", "message": "You can invite players you've played a match with"})
+    try:
+        manager_of(request).invite(str(user.id), user.nickname, user.avatar, str(body.to), body.code)
+    except RoomError as e:
+        raise room_error(e) from e
+    return {"status": "sent"}
+
+
+@router.get("/invites", dependencies=[Depends(rate_limit("invites_poll", 30, 60))])
+def my_invites(user: CurrentUser, request: Request) -> list[InviteOut]:
+    """Invites you can still take up (room open, sender still in it), newest first. Poll every ~10 s while looking."""
+    return [InviteOut(**i) for i in manager_of(request).invites_for(str(user.id))]
+
+
+@router.delete("/invites/{from_id}", status_code=status.HTTP_204_NO_CONTENT)
+def dismiss_invite(from_id: uuid.UUID, user: CurrentUser, request: Request) -> None:
+    manager_of(request).dismiss_invite(str(user.id), str(from_id))
+
+
 # ── Quick match ──
 
 
 @router.post("/quickmatch", dependencies=[Depends(rate_limit("quickmatch", 60, 60))])
 def quick_match(body: QuickMatchRequest, user: CurrentUser, request: Request) -> QuickMatchOut:
     """Poll every ~2 s while looking for a game: you stay queued only while you keep polling."""
-    return QuickMatchOut(**manager_of(request).quick_match(str(user.id), user.nickname, body.difficulty, avatar=user.avatar))
+    return QuickMatchOut(**manager_of(request).quick_match(str(user.id), user.nickname, body.difficulty, avatar=user.avatar, rating=user.rating))
 
 
 @router.delete("/quickmatch", status_code=status.HTTP_204_NO_CONTENT)
@@ -387,7 +424,7 @@ def client_error(body: ClientError, request: Request) -> dict[str, str]:
 
 
 @router.websocket("/ws/{code}")
-async def room_socket(ws: WebSocket, code: str, token: str | None = None) -> None:
+async def room_socket(ws: WebSocket, code: str, token: str | None = None, watch: bool = False) -> None:
     """
     Connect with `/ws/{CODE}?token=<guest token>`.
     Client → server: {"type": "ping", "t"}, {"type": "ready", "ready"}, {"type": "start"},
@@ -406,6 +443,9 @@ async def room_socket(ws: WebSocket, code: str, token: str | None = None) -> Non
         await ws.close(code=4401)
         return
     user_id, nickname, avatar, level, loadout = identity
+    if watch:
+        await watch_room(ws, manager, code, user_id, nickname)
+        return
     try:
         await manager.connect(code, user_id, nickname, ws, avatar=avatar, level=level, loadout=usable_loadout(loadout, level))
     except RoomError as e:
@@ -432,3 +472,26 @@ async def room_socket(ws: WebSocket, code: str, token: str | None = None) -> Non
         # still hear that this player dropped.
         with anyio.CancelScope(shield=True):
             await manager.disconnect(code, user_id, ws)
+
+
+async def watch_room(ws: WebSocket, manager: RoomManager, code: str, user_id: str, nickname: str) -> None:
+    """`/ws/{CODE}?token=…&watch=1`: everything the players see, no seat, no actions (ping and leave only)."""
+    try:
+        await manager.watch(code, user_id, nickname, ws)
+    except RoomError as e:
+        await ws.send_json({"type": "error", "code": e.code, "message": e.message})
+        await ws.close(code=4404 if e.status == 404 else 4403 if e.status == 403 else 4409)
+        return
+    try:
+        while True:
+            try:
+                msg = await ws.receive_json()
+            except ValueError:
+                continue
+            if isinstance(msg, dict) and not await manager.handle_spectator(code, user_id, ws, msg):
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with anyio.CancelScope(shield=True):
+            await manager.unwatch(code, user_id, ws)

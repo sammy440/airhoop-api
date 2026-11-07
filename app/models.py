@@ -32,6 +32,9 @@ class User(SQLModel, table=True):
     last_daily: str | None = Field(default=None, max_length=16)  # last daily challenge that earned its bonus
     # Chosen ball skin and trail ({"ball", "trail"}); shown to others only if unlocked (app/game/cosmetics.py).
     loadout: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # Skill rating (app/game/rating.py) and how many rated matches it's from
+    rating: int = Field(default=1000)
+    rated_games: int = Field(default=0)
 
 
 class AuthToken(SQLModel, table=True):
@@ -100,6 +103,7 @@ class MatchPlayer(SQLModel, table=True):
     banks: int = 0
     best_streak: int = 0
     letters: int | None = None  # H-O-R-S-E only
+    rating_change: int | None = None  # null: unrated (aborted, or before ratings)
 
 
 class PlayerDay(SQLModel, table=True):
