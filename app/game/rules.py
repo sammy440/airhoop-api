@@ -8,7 +8,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
-from .physics import Court, HoopMotion, Launch, ShotResult
+from .physics import Court, Launch, ShotResult
 
 # ── shot.ts: throw → launch ──
 
@@ -55,25 +55,26 @@ POWER_RANGE = ((TUNING.min_speed * 0.6 - TUNING.min_speed) / (TUNING.max_speed -
 
 @dataclass(frozen=True)
 class Difficulty:
+    """Where you shoot from: the hoop stands still at every level (difficulty.ts explains the numbers)."""
+
     id: str
     distance: float
     rim_radius: float
-    hoop_motion: HoopMotion | None
     wind_max: float
     score_multiplier: float
     green_window: float  # camera play: seconds per 3 s loop the rim is green (app/game/green.py)
 
 
 DIFFICULTIES: dict[str, Difficulty] = {
-    "rookie": Difficulty("rookie", 3.6, 0.27, None, 0, 1, 1.2),
-    "starter": Difficulty("starter", 4.6, 0.2286, None, 0, 1, 1.0),
-    "allstar": Difficulty("allstar", 5.8, 0.2286, HoopMotion(0.45, 0.22), 0.6, 1.5, 0.8),
-    "legend": Difficulty("legend", 6.75, 0.2286, HoopMotion(0.7, 0.3), 1.2, 2, 0.6),
+    "rookie": Difficulty("rookie", 3.6, 0.27, 0, 1, 1.2),
+    "starter": Difficulty("starter", 4.6, 0.2286, 0, 1, 1.0),
+    "allstar": Difficulty("allstar", 6.75, 0.2286, 0.6, 1.5, 0.8),  # the three-point line
+    "legend": Difficulty("legend", 8.0, 0.2286, 1.2, 2, 0.6),  # deep three
 }
 
 
 def court_for(d: Difficulty) -> Court:
-    return Court(hoop_distance=d.distance, rim_radius=d.rim_radius, hoop_motion=d.hoop_motion)
+    return Court(hoop_distance=d.distance, rim_radius=d.rim_radius, hoop_motion=None)
 
 
 def roll_wind(d: Difficulty, rng: random.Random | None = None) -> float:
