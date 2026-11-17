@@ -68,8 +68,8 @@ class Difficulty:
 DIFFICULTIES: dict[str, Difficulty] = {
     "rookie": Difficulty("rookie", 3.6, 0.27, 0, 1, 1.2),
     "starter": Difficulty("starter", 4.6, 0.2286, 0, 1, 1.0),
-    "allstar": Difficulty("allstar", 6.75, 0.2286, 0.6, 1.5, 0.8),  # the three-point line
-    "legend": Difficulty("legend", 8.0, 0.2286, 1.2, 2, 0.6),  # deep three
+    "allstar": Difficulty("allstar", 6.75, 0.2286, 0.3, 1.5, 0.8),  # the three-point line
+    "legend": Difficulty("legend", 8.0, 0.2286, 0.5, 2, 0.6),  # deep three
 }
 
 
