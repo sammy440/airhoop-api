@@ -251,3 +251,20 @@ def test_cors_allows_vercel_deployments(client):
     assert allowed("https://airhoops-4f7k2xq1-sammie440s-projects.vercel.app")
     assert not allowed("https://airhoops-evil.vercel.app")
     assert not allowed("https://evil.example.com")
+
+
+def test_spot_mode_scores(client):
+    """Ladder and Rack Run: one board each, posted with the deepest spot's difficulty."""
+    t, _ = make_guest(client, "Spots")
+    # A Rack Run: 20 balls, 4 gold (double) — at most 18 a make, plus 4 doubled
+    assert score(client, t, mode="racks", difficulty="legend", points=18 * 24, makes=20, shots=20).status_code == 201
+    assert score(client, t, mode="ladder", difficulty="legend", points=200, makes=30, shots=45).status_code == 201
+    for bad in [
+        dict(mode="racks", difficulty="legend", points=18 * 25, makes=20, shots=20),  # more than 4 gold balls
+        dict(mode="racks", difficulty="legend", points=10, makes=5, shots=21),  # 20 balls
+        dict(mode="ladder", difficulty="legend", points=10, makes=5, shots=61),  # a 60 s clock
+        dict(mode="ladder", difficulty="starter", points=10, makes=5, shots=10),  # not the spot board's difficulty
+    ]:
+        assert score(client, t, **bad).status_code == 422, bad
+    board = client.get("/leaderboard", params={"mode": "racks"}).json()
+    assert [e["best"] for e in board] == [18 * 24]

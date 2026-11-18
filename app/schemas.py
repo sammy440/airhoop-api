@@ -152,6 +152,13 @@ MAX_MAKE_POINTS = {"rookie": 9, "starter": 9, "allstar": 13.5, "legend": 18}
 # Clutch time (frontend lib/game/clutch.ts): makes in a timed run's last 10 s score double.
 # A shot takes over a second, so at most this many makes earn it.
 CLUTCH_MAKES = 10
+# Shooting-spot modes (frontend lib/game/spots.ts): one board each, posted with the deepest
+# spot's difficulty (the highest multiplier a make can get). Ladder runs on a 60 s clock (with
+# clutch time); a Rack Run is 20 balls, the last of each 5-ball rack gold (double points).
+LADDER_SECONDS = 60
+RACK_SHOTS = 20
+RACK_GOLD_BALLS = 4
+SPOT_DIFFICULTY = "legend"
 
 
 class ScoreCreate(BaseModel):
@@ -161,8 +168,8 @@ class ScoreCreate(BaseModel):
     `score` is points for timed and daily runs and the best streak for streak runs.
     """
 
-    # Mode key as used for bests, e.g. "streak", "timed60", "daily20261030" (free play has no leaderboard)
-    mode: Annotated[str, StringConstraints(pattern=r"^(free|streak|timed\d{2,4}|daily\d{8})$")]
+    # Mode key as used for bests, e.g. "streak", "timed60", "daily20261030", "ladder", "racks" (free play has no leaderboard)
+    mode: Annotated[str, StringConstraints(pattern=r"^(free|streak|ladder|racks|timed\d{2,4}|daily\d{8})$")]
     difficulty: Difficulty
     score: int = Field(ge=0, le=100_000)
     shots: int = Field(ge=0, le=10_000)
@@ -175,8 +182,17 @@ class ScoreCreate(BaseModel):
         if self.mode == "streak":
             if self.score > self.makes:
                 raise ValueError("streak longer than makes")
+        elif self.mode == "racks":
+            if self.score > (self.makes + min(self.makes, RACK_GOLD_BALLS)) * MAX_MAKE_POINTS[self.difficulty]:
+                raise ValueError("score too high for the makes")
         elif self.score > (self.makes + min(self.makes, CLUTCH_MAKES)) * MAX_MAKE_POINTS[self.difficulty]:
             raise ValueError("score too high for the makes")
+        if self.mode in ("ladder", "racks") and self.difficulty != SPOT_DIFFICULTY:
+            raise ValueError("spot runs are posted with the deepest spot's difficulty")
+        if self.mode == "ladder" and self.shots > LADDER_SECONDS:
+            raise ValueError("too many shots for the clock")
+        if self.mode == "racks" and self.shots > RACK_SHOTS:
+            raise ValueError("a rack run is 20 balls")
         if self.mode.startswith("timed"):
             seconds = int(self.mode[5:])
             if not 30 <= seconds <= 1800:
@@ -350,8 +366,9 @@ class ShootingStats(BaseModel):
 
 # ── Personal bests and ghosts, kept with the account (/me/bests) ──
 
-# The browser's best keys (modes.ts bestKey): timed and daily runs, streaks, and free play per difficulty.
-BEST_KEY_PATTERN = r"^((timed\d{2,4}|streak|free):(rookie|starter|allstar|legend)|daily\d{8})$"
+# The browser's best keys (modes.ts bestKey): timed and daily runs, streaks, and free play per
+# difficulty; one key each for the spot modes, which move through every level's spot.
+BEST_KEY_PATTERN = r"^((timed\d{2,4}|streak|free):(rookie|starter|allstar|legend)|daily\d{8}|ladder|racks)$"
 GHOST_MAX_SHOTS = 600
 
 

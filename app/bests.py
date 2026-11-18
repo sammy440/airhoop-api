@@ -13,7 +13,7 @@ from sqlmodel import Session, col, select
 
 from .game import daily
 from .models import SavedBest, utcnow
-from .schemas import CLUTCH_MAKES, MAX_MAKE_POINTS, BestIn, BestOut, BestSaved
+from .schemas import CLUTCH_MAKES, MAX_MAKE_POINTS, SPOT_DIFFICULTY, BestIn, BestOut, BestSaved
 
 # Daily bests stop mattering once that challenge is over; keep sending only the recent ones.
 DAILY_DAYS = 2
@@ -23,6 +23,8 @@ def _difficulty(key: str) -> str | None:
     if key.startswith("daily"):
         day = daily.parse_key(key)
         return daily.daily_rules(day).difficulty if day else None
+    if ":" not in key:  # "ladder", "racks": every spot, capped at the deepest one's points
+        return SPOT_DIFFICULTY
     return key.split(":", 1)[1]
 
 

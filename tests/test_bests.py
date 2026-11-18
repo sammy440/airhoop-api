@@ -92,3 +92,14 @@ def test_erasing_yourself_removes_your_bests(client):
 def test_needs_a_player(client):
     assert client.get("/me/bests").status_code == 401
     assert client.put("/me/bests/timed60:rookie", json=run([3])).status_code == 401
+
+
+def test_spot_mode_bests_have_one_key_each(client):
+    token, _ = make_guest(client, "Ladder")
+    res = client.put("/me/bests/ladder", json={"points": 120, "makes": 20, "streak": 6, "at": AT}, headers=auth(token))
+    assert res.status_code == 200, res.text
+    assert client.put("/me/bests/racks", json={"points": 60, "makes": 12, "streak": 4, "at": AT}, headers=auth(token)).status_code == 200
+    mine = client.get("/me/bests", headers=auth(token)).json()
+    assert {"ladder", "racks"} <= set(mine)
+    # No ghosts: they re-fly one court, and these runs move between spots
+    assert client.put("/me/bests/racks", json=run([3, 3, 3]), headers=auth(token)).status_code == 422
